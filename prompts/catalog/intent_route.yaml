@@ -1,0 +1,8 @@
+name: intent_route
+type: text
+template: |
+  Identify user intents and missing references from the message: {message}
+  Return only the RouteDecision schema. Treat identifiers as unverified.
+required_variables: [message]
+schema_ref: RouteDecision.v1
+description: Intent candidate extraction

@@ -1,0 +1,8 @@
+name: synthesis
+type: text
+template: |
+  Explain verified order facts and policy evidence separately for: {question}
+  Cite source identifiers and say when evidence is incomplete.
+required_variables: [question]
+schema_ref: ChatAnswer.v1
+description: Customer answer synthesis

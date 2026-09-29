@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+*.db
+*.sqlite*
+evals/reports/*/
+observability/exports/*/
+data/generated/
+*.log
+*.egg-info/
+node_modules/
+.next/

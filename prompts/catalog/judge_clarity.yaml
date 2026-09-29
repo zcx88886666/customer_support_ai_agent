@@ -1,0 +1,7 @@
+name: judge_clarity
+type: text
+template: |
+  Rate the clarity of this answer without overriding safety checks: {answer}
+required_variables: [answer]
+schema_ref: JudgeScore.v1
+description: Offline optional clarity judge

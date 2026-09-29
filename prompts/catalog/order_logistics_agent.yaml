@@ -1,0 +1,8 @@
+name: order_logistics_agent
+type: text
+template: |
+  Inspect only the verified order reference for: {question}
+  Return observed status and source versions, with uncertainty where needed.
+required_variables: [question]
+schema_ref: SpecialistFinding.v1
+description: Read-only order specialist

@@ -1,0 +1,8 @@
+name: coordinator
+type: text
+template: |
+  Coordinate read-only evidence for this customer question: {question}
+  Use only verified references supplied by the service. Ask for missing details.
+required_variables: [question]
+schema_ref: AgentState.v1
+description: Coordinator planning

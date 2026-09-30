@@ -16,6 +16,7 @@ Updated 2026-09-29. This log records encountered failures, fixes, and open integ
 | First lexical retrieval revision made a return question lack policy evidence | Normalized “我要退” to the return topic and made incomplete findings safe for the scorer; the subsequent smoke run passed. |
 | A replayed return idempotency key could expose another customer's request ID | Scoped replay results to the authenticated customer, required confirmation on retries, and locked the owned order row before the quantity check on PostgreSQL. The regression test and 25-case smoke runner passed. |
 | Backup restore proof was missing | Created `/tmp/resolveai-backup-20260929.bundle` from the committed repository, verified complete history, cloned it to `/tmp/resolveai-restore-20260929`, confirmed HEAD `cd94ed7`, and loaded `release-v1` successfully from the restored Prompt catalog. Bundle SHA-256: `e9acc987f302faa93ba5a3248a97894b5d36da3c296ac29cf1945e30af20ef90`. This is a local drill; no separate offline device was available. |
+| Received returns had no deadline warning | Added a one-shot, idempotent 24-hour warning and overdue alert with an audit event and supervisor read endpoint. The new migration upgraded on SQLite and its boundary/retry test passed. A recurring schedule and delivery channel remain open. |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
@@ -27,16 +28,16 @@ Updated 2026-09-29. This log records encountered failures, fixes, and open integ
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |
 | Policy retrieval | The no-key retrieval is deterministic lexical/character-gram RRF. PostgreSQL full-text + pgvector embedding indexes, index versioning, and historical policy publication/rollback regression suite remain open. |
 | Memory A/B | Confirmed preferences, consent, correction, deletion, and ownership are tested. PostgresStore and Mem0 OSS A/B with 40 multi-session stories and live route selection are not complete. Memory does not influence transactional facts. |
-| Operational scale | CSV generation/validation reached the planned 100k and 1m counts. PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, and a backup restore drill are not measured. |
+| Operational scale | CSV generation/validation reached the planned 100k and 1m counts. PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, recurring deadline task scheduling, and an actual offline copy are not measured. A local Git bundle restore was verified. |
 | Frontend browser behavior | Next.js compile and TypeScript build passed. Playwright role journeys, real Keycloak login, and browser-to-API integration remain unverified. |
 
 ## Last local checks
 
 ```text
-.venv/bin/pytest -q                 20 passed (including 1,000 refund properties, OIDC, and multi-turn slots)
+.venv/bin/pytest -q                 21 passed (including 1,000 refund properties, OIDC, multi-turn slots, and deadline alerts)
 .venv/bin/python evals/runners/run_smoke.py  25 unique cases, 28 mock executions passed
 apps/web: npm run build             compiled, TypeScript passed
 data/generator/validate.py realistic-100k-v3  100,000 orders, 0 violations, hashes match
 data/generator/validate.py scale-1m-v3       1,000,000 orders, 0 violations, hashes match
-alembic upgrade head on SQLite test DB      passed
+alembic upgrade head on SQLite test DB      passed, including refund deadline alerts
 ```

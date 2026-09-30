@@ -129,6 +129,13 @@ def proposals(actor: Principal = Depends(principal), db: Session = Depends(get_d
     return [{"id": p.id, "return_id": p.return_id, "amount_cents": p.amount_cents, "status": p.status} for p in db.scalars(select(m.RefundProposal).where(m.RefundProposal.status == "pending")).all()]
 
 
+@app.get("/supervisor/refund-deadlines")
+def refund_deadlines(actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    actor.require("supervisor")
+    alerts = db.scalars(select(m.RefundDeadlineAlert).order_by(m.RefundDeadlineAlert.deadline_at, m.RefundDeadlineAlert.return_id)).all()
+    return [{"return_id": alert.return_id, "kind": alert.kind, "deadline_at": alert.deadline_at, "created_at": alert.created_at} for alert in alerts]
+
+
 @app.post("/supervisor/proposals/{proposal_id}/decision")
 def decision(proposal_id: str, body: DecisionInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("supervisor")

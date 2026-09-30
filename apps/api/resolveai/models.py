@@ -145,6 +145,14 @@ class WarehouseReceipt(Base):
     actor_id: Mapped[str] = mapped_column(String(64))
 
 
+class RefundDeadlineAlert(Base):
+    __tablename__ = "refund_deadline_alerts"
+    return_id: Mapped[str] = mapped_column(ForeignKey("return_requests.id"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Inspection(Base):
     __tablename__ = "inspections"
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)

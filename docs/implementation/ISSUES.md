@@ -17,6 +17,7 @@ Updated 2026-09-29. This log records encountered failures, fixes, and open integ
 | A replayed return idempotency key could expose another customer's request ID | Scoped replay results to the authenticated customer, required confirmation on retries, and locked the owned order row before the quantity check on PostgreSQL. The regression test and 25-case smoke runner passed. |
 | Backup restore proof was missing | Created `/tmp/resolveai-backup-20260929.bundle` from the committed repository, verified complete history, cloned it to `/tmp/resolveai-restore-20260929`, confirmed HEAD `cd94ed7`, and loaded `release-v1` successfully from the restored Prompt catalog. Bundle SHA-256: `e9acc987f302faa93ba5a3248a97894b5d36da3c296ac29cf1945e30af20ef90`. This is a local drill; no separate offline device was available. |
 | Received returns had no deadline warning | Added a one-shot, idempotent 24-hour warning and overdue alert with an audit event and supervisor read endpoint. The new migration upgraded on SQLite and its boundary/retry test passed. Compose invokes the worker every 30 seconds, but live delivery remains unverified. |
+| The HTTP path lacked an automated cross-role refund check | Added an isolated TestClient workflow covering another customer's denial, idempotent return retry, warehouse receipt/inspection, approval-before-issue, supervisor role rejection, one ledger entry on worker retry, and audit actions. The test passed on SQLite. |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
@@ -34,7 +35,7 @@ Updated 2026-09-29. This log records encountered failures, fixes, and open integ
 ## Last local checks
 
 ```text
-.venv/bin/pytest -q                 21 passed (including 1,000 refund properties, OIDC, multi-turn slots, and deadline alerts)
+.venv/bin/pytest -q                 22 passed (including 1,000 refund properties, OIDC, multi-turn slots, deadline alerts, and cross-role HTTP refund)
 .venv/bin/python evals/runners/run_smoke.py  25 unique cases, 28 mock executions passed
 apps/web: npm run build             compiled, TypeScript passed
 data/generator/validate.py realistic-100k-v3  100,000 orders, 0 violations, hashes match

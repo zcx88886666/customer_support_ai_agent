@@ -7,6 +7,7 @@ type Role = "customer" | "warehouse" | "supervisor";
 type Order = { id: string; status: string; version: number };
 type Item = { id: string; quantity: number; paid_cents: number };
 type Proposal = { id: string; return_id: string; amount_cents: number; status: string };
+type DeadlineAlert = { return_id: string; kind: string; deadline_at: string };
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 const authMode = process.env.NEXT_PUBLIC_AUTH_MODE || "mock";
@@ -26,6 +27,7 @@ export default function Home() {
   const [quantity, setQuantity] = useState(1);
   const [confirmed, setConfirmed] = useState(false);
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [deadlineAlerts, setDeadlineAlerts] = useState<DeadlineAlert[]>([]);
   const [notice, setNotice] = useState("");
   const [keycloak, setKeycloak] = useState<Keycloak | null>(null);
 
@@ -81,7 +83,10 @@ export default function Home() {
     try { const value = await call(path, { method: "POST", body: JSON.stringify(body) }); setNotice(JSON.stringify(value)); } catch (error) { setNotice(String(error)); }
   }
   async function loadProposals() {
-    try { setProposals(await call("/supervisor/proposals")); } catch (error) { setNotice(String(error)); }
+    try {
+      const [pending, alerts] = await Promise.all([call("/supervisor/proposals"), call("/supervisor/refund-deadlines")]);
+      setProposals(pending); setDeadlineAlerts(alerts); setNotice("");
+    } catch (error) { setNotice(String(error)); }
   }
 
   return <main>
@@ -96,7 +101,7 @@ export default function Home() {
         <section className="card"><h2>申请退货</h2><p>订单 {orderId} · 商品 {items[0]?.id || "请先查看商品"}</p><label>数量<input type="number" min="1" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label>原因<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><label><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />我确认订单、商品、数量、原因并提交申请</label><button disabled={!confirmed || !items[0]} onClick={submitReturn}>提交退货</button><p>{returnId}</p></section>
       </>}
       {role === "warehouse" && <section className="card"><h2>仓库</h2><label>退货申请 ID<input value={returnId} onChange={(e) => setReturnId(e.target.value)} /></label><label>实收数量<input type="number" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/receipt`, { quantity })}>记录入库</button><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: true, note: "intact" })}>质检通过</button><button className="secondary" onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: false, note: "exception" })}>质检异常</button><button onClick={() => warehouse(`/returns/${encodeURIComponent(returnId)}/proposal`, {})}>生成规则提案</button></section>}
-      {role === "supervisor" && <section className="card"><h2>主管审批</h2><button onClick={loadProposals}>刷新待审提案</button><ul>{proposals.map((proposal) => <li key={proposal.id}>{proposal.id} · ¥{(proposal.amount_cents / 100).toFixed(2)}<br /><button onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: true })}>批准</button><button className="secondary" onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: false })}>拒绝</button></li>)}</ul><p>批准后由受控退款 Worker 执行单笔模拟退款。</p></section>}
+      {role === "supervisor" && <section className="card"><h2>主管审批</h2><button onClick={loadProposals}>刷新待审提案与期限</button><ul>{proposals.map((proposal) => <li key={proposal.id}>{proposal.id} · ¥{(proposal.amount_cents / 100).toFixed(2)}<br /><button onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: true })}>批准</button><button className="secondary" onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: false })}>拒绝</button></li>)}</ul><h3>退款处理期限</h3><ul>{deadlineAlerts.map((alert) => <li key={`${alert.return_id}:${alert.kind}`}>{alert.return_id} · {alert.kind === "overdue" ? "已逾期" : "24 小时内到期"} · {new Date(alert.deadline_at).toLocaleString()}</li>)}</ul><p>批准后由受控退款 Worker 执行单笔模拟退款。</p></section>}
     </div>
   </main>;
 }

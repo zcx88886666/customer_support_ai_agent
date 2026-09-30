@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from fastapi.testclient import TestClient
 
 from resolveai import domain as d, models as m, worker
+from resolveai.api import app
+from resolveai.db import get_db
 
 
 AT = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
@@ -23,3 +26,17 @@ def test_refund_deadline_alerts_are_idempotent(session_factory, monkeypatch):
     with session_factory() as db:
         assert {alert.kind for alert in db.scalars(select(m.RefundDeadlineAlert)).all()} == {"due_soon", "overdue"}
         assert len(db.scalars(select(m.AuditEvent).where(m.AuditEvent.entity_id == return_id, m.AuditEvent.action.like("refund_deadline_%"))).all()) == 2
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            assert client.get("/supervisor/refund-deadlines", headers={"x-mock-actor": "cust-01", "x-mock-role": "customer"}).status_code == 403
+            result = client.get("/supervisor/refund-deadlines", headers={"x-mock-actor": "supervisor-1", "x-mock-role": "supervisor"})
+        assert result.status_code == 200
+        assert [(row["return_id"], row["kind"]) for row in result.json()] == [(return_id, "overdue")]
+    finally:
+        app.dependency_overrides.clear()

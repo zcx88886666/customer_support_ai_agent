@@ -132,8 +132,12 @@ def proposals(actor: Principal = Depends(principal), db: Session = Depends(get_d
 @app.get("/supervisor/refund-deadlines")
 def refund_deadlines(actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("supervisor")
-    alerts = db.scalars(select(m.RefundDeadlineAlert).order_by(m.RefundDeadlineAlert.deadline_at, m.RefundDeadlineAlert.return_id)).all()
-    return [{"return_id": alert.return_id, "kind": alert.kind, "deadline_at": alert.deadline_at, "created_at": alert.created_at} for alert in alerts]
+    rows = db.execute(select(m.RefundDeadlineAlert).join(m.ReturnRequest, m.RefundDeadlineAlert.return_id == m.ReturnRequest.id).where(m.ReturnRequest.status != "refund_issued").order_by(m.RefundDeadlineAlert.deadline_at, m.RefundDeadlineAlert.return_id)).scalars()
+    latest = {}
+    for alert in rows:
+        if alert.kind == "overdue" or alert.return_id not in latest:
+            latest[alert.return_id] = alert
+    return [{"return_id": alert.return_id, "kind": alert.kind, "deadline_at": alert.deadline_at, "created_at": alert.created_at} for alert in latest.values()]
 
 
 @app.post("/supervisor/proposals/{proposal_id}/decision")

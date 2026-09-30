@@ -59,6 +59,10 @@ services:
     command: ["sh", "-c", "while true; do python -m resolveai.worker; sleep 30; done"]
     environment:
       DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

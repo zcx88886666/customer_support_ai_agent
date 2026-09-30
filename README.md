@@ -34,7 +34,7 @@ Open `http://localhost:3000`. The page exposes the customer, warehouse, and supe
 2. Customer: `POST /returns` with an owned order/item, positive quantity, reason, `confirmed=true`, and an idempotency key. The service recalculates eligibility using the Shanghai business calendar.
 3. Warehouse: `POST /warehouse/returns/{id}/receipt`, then `/inspection`, then `POST /returns/{id}/proposal`.
 4. Supervisor: `GET /supervisor/proposals`, then `POST /supervisor/proposals/{id}/decision`.
-5. Controlled worker: run `.venv/bin/python -m resolveai.worker`. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Run the worker on a schedule for live reminders. The customer and Agent APIs have no refund issuance endpoint.
+5. Controlled worker: run `.venv/bin/python -m resolveai.worker`. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose calls the worker every 30 seconds; that schedule has not been run here. The customer and Agent APIs have no refund issuance endpoint.
 
 For a full mock HTTP replay on the seeded local database, run `.venv/bin/python scripts/demo_workflow.py`. It is safe to rerun with the same idempotency key; a second run must not add another ledger entry.
 

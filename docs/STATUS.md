@@ -17,7 +17,7 @@
 | 1. Foundation | Git catalog commit, local release manifest, schema migration, mock API, ownership tests, 25 demo orders; local Git bundle restore drill | Docker/Keycloak/MCP integration; copy bundle to separate offline medium |
 | 2. Consistent data | Fixed-seed 100k/1m CSV generation and independent validation | PostgreSQL COPY and database quality/load report |
 | 3. Single graph | Deterministic route/slot baseline, LangGraph graph, safe thread state, optional PostgresSaver wiring, SSE endpoint | Real-model regression, restart/interrupt test, full clarification/Replan contract |
-| 4. Policy and business close | Seven-day rule, favorable window, return→receipt→inspection→proposal→approval→idempotent ledger, policy hash publication tests, idempotent due-soon/overdue alerts | Full policy index/version rollback and scheduled reminder delivery |
+| 4. Policy and business close | Seven-day rule, favorable window, return→receipt→inspection→proposal→approval→idempotent ledger, policy hash publication tests, idempotent due-soon/overdue alerts | Full policy index/version rollback and live Compose reminder delivery |
 | 5. Collaboration | Read-only specialist subgraphs, fan-out/fan-in, source/version validation, stale/forged finding tests | Live fault injection and model-assisted specialist analysis |
 | 6. Evaluation | 25-case isolated HTTP mock runner with local manifest/JSONL/HTML report | Human-reviewed larger suites, mutation/property tests, locked real-model paired comparison |
 | 7. Observation and scale | OTel adapter/Collector config, optional Langfuse score/mirror/export code; measured CSV generation | Cloud reconciliation/dashboard/quota data, Jaeger trace tests, k6/API scale metrics |

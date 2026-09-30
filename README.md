@@ -76,6 +76,15 @@ Set `OPENROUTER_API_KEY` to enable structured intent extraction using the exact 
 
 ## Security and backups
 
-Do not commit `.env`, access tokens, real customer data, raw private conversations, generated million-row CSV files, or unredacted traces. The repository ignores local databases, reports, large data, and export folders. Backup the Git repository and release manifest to a separate local/offline medium, then periodically restore to a new directory and compare the catalog commit and SHA-256 values. Git alone is not an offline backup.
+Do not commit `.env`, access tokens, real customer data, raw private conversations, generated million-row CSV files, or unredacted traces. The repository ignores local databases, reports, large data, and export folders. Create a complete bundle and test a restore before copying it to a separate offline medium:
+
+```bash
+git bundle create /tmp/resolveai-backup.bundle --all
+git bundle verify /tmp/resolveai-backup.bundle
+git clone /tmp/resolveai-backup.bundle /tmp/resolveai-restore
+sha256sum /tmp/resolveai-backup.bundle
+```
+
+In the restored checkout, compare `git rev-parse HEAD` with the source and load `release-v1` through `PromptRegistry` to verify catalog hashes. A local bundle alone is not an offline backup; copy it to storage outside this machine.
 
 The remaining v6 gates, failed commands, and external prerequisites are tracked in [implementation issues](docs/implementation/ISSUES.md) and [status](docs/STATUS.md). The project should not be described as production deployed or fully validated while those gates remain open.

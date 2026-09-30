@@ -4,7 +4,7 @@
 
 ## Current snapshot
 
-- Git was initialized and a local Prompt catalog commit (`ed6f457`) exists. [release-v1](../prompts/releases/release-v1.json) locks that commit and every catalog SHA-256. The catalog, not Langfuse Cloud, supplies runtime Prompt text.
+- Git was initialized; the implementation is committed as `cd94ed7` and the local Prompt catalog as `ed6f457`. [release-v1](../prompts/releases/release-v1.json) locks the catalog commit and every catalog SHA-256. A complete Git bundle was verified and restored to a separate `/tmp` checkout at `cd94ed7`, where PromptRegistry accepted the release. The catalog, not Langfuse Cloud, supplies runtime Prompt text.
 - A FastAPI/SQLAlchemy after-sales service, Alembic migrations, a LangGraph parent graph with read-only policy and order specialist subgraphs, a no-key mock mode, OIDC verification code, a Commerce MCP service, a controlled refund worker, Next.js UI, and Compose definitions are present.
 - No-key local checks passed: **20 Python tests** (including 1,000 generated refund allocations, offline OIDC checks, and multi-turn return slots), **25 unique synthetic smoke cases / 28 executions**, and a **Next.js production build**. A [redacted smoke summary](implementation/mock-smoke-2026-09-29.json) is committed; the full local report is generated under ignored `evals/reports/<run_id>/`.
 - The synthetic generator produced and independently validated **100,000** and **1,000,000** orders, with zero violations reported by its CSV validator. See [measured data report](implementation/data-generation-2026-09-29.md). The large CSVs are ignored and were not imported into PostgreSQL.
@@ -14,7 +14,7 @@
 
 | v6 stage | Verified now | Still open |
 |---|---|---|
-| 1. Foundation | Git catalog commit, local release manifest, schema migration, mock API, ownership tests, 25 demo orders | Docker/Keycloak/MCP integration; offline backup restore |
+| 1. Foundation | Git catalog commit, local release manifest, schema migration, mock API, ownership tests, 25 demo orders; local Git bundle restore drill | Docker/Keycloak/MCP integration; copy bundle to separate offline medium |
 | 2. Consistent data | Fixed-seed 100k/1m CSV generation and independent validation | PostgreSQL COPY and database quality/load report |
 | 3. Single graph | Deterministic route/slot baseline, LangGraph graph, safe thread state, optional PostgresSaver wiring, SSE endpoint | Real-model regression, restart/interrupt test, full clarification/Replan contract |
 | 4. Policy and business close | Seven-day rule, favorable window, return→receipt→inspection→proposal→approval→idempotent ledger, policy hash publication tests | Full policy index/version rollback and deadline reminders |

@@ -15,12 +15,13 @@ Updated 2026-09-29. This log records encountered failures, fixes, and open integ
 | First smoke run had two routing failures | Complaint handoff and general signed-goods policy routing were fixed; subsequent 25-case run passed all 28 executions. |
 | First lexical retrieval revision made a return question lack policy evidence | Normalized “我要退” to the return topic and made incomplete findings safe for the scorer; the subsequent smoke run passed. |
 | A replayed return idempotency key could expose another customer's request ID | Scoped replay results to the authenticated customer, required confirmation on retries, and locked the owned order row before the quantity check on PostgreSQL. The regression test and 25-case smoke runner passed. |
+| Backup restore proof was missing | Created `/tmp/resolveai-backup-20260929.bundle` from the committed repository, verified complete history, cloned it to `/tmp/resolveai-restore-20260929`, confirmed HEAD `cd94ed7`, and loaded `release-v1` successfully from the restored Prompt catalog. Bundle SHA-256: `e9acc987f302faa93ba5a3248a97894b5d36da3c296ac29cf1945e30af20ef90`. This is a local drill; no separate offline device was available. |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
 | Gate | Current evidence and next concrete action |
 |---|---|
-| Docker/PostgreSQL/Keycloak/Jaeger integration | `docker`/`podman` are unavailable here. Compose, migrations, realm import, MCP, OIDC claims, PostgresSaver, OTLP export, PostgreSQL COPY, refund worker concurrency, and container restart recovery need a Docker-capable Ubuntu run. SQLite migrations were upgraded successfully. |
+| Docker/PostgreSQL/Keycloak/Jaeger integration | `docker`/`podman` are unavailable here. Compose, migrations, realm import, MCP, OIDC claims, PostgresSaver, OTLP export, PostgreSQL COPY, refund worker concurrency, and container restart recovery need a Docker-capable Ubuntu run. SQLite migrations were upgraded successfully. The Git bundle restore was tested locally, but the bundle still needs copying to a separate offline medium. |
 | Langfuse Cloud | No project name, public/secret keys, or base URL were provided. Local inference and eval do not depend on Cloud. With keys, run mirror sync/drift check, an eval, export reconciliation, masking canary, dashboard setup, and quota calibration. |
 | OpenRouter real-model path | No key or live model budget was provided. The configured structured intent adapter is unmeasured. Run provider/schema trials, fix provider version, then paired locked evaluations. |
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |

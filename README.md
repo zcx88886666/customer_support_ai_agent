@@ -1,10 +1,22 @@
 # ResolveAI
 
-ResolveAI is a synthetic, single-company e-commerce after-sales demonstration. It offers a no-key local mock path for customer order lookup, read-only policy and logistics specialists, confirmed return requests, warehouse inspection, supervisor approval, and one idempotent simulated refund. It does not connect to a real payment provider. The [v6 specification](plans/resolveai-v6.md) describes the full target; [verified status](docs/STATUS.md) distinguishes implemented work from remaining integration work.
+ResolveAI is a synthetic, single-company e-commerce after-sales demonstration. It offers a no-key local mock path for customer order lookup, read-only policy and logistics specialists, confirmed return requests, warehouse inspection, supervisor approval, and one idempotent simulated refund. It does not connect to a real payment provider. PostgreSQL with pgvector is the v6 primary database; SQLite is the lightweight fallback for local mock tests. The [v6 specification](plans/resolveai-v6.md) describes the full target; [verified status](docs/STATUS.md) distinguishes implemented work from remaining integration work.
+
+## PostgreSQL-backed run
+
+The Compose profile configures PostgreSQL with pgvector for API, worker, and MCP. On a Docker-capable host, start a fresh local stack and seed its demo data:
+
+```bash
+docker compose -f infra/compose/compose.yaml up --build -d postgres api worker web
+docker compose -f infra/compose/compose.yaml exec api python -m resolveai.seed --clock "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+docker compose -f infra/compose/compose.yaml exec api python scripts/verify_postgres.py --expected-orders 25
+```
+
+Open `http://localhost:3000` for the mock role workflow. The API container applies Alembic migrations before starting; the PostgreSQL migration enables pgvector. This exact Compose stack has not run in this workspace because Docker is unavailable. A separate local PostgreSQL **16.15** integration test did run: migrations, pgvector operations, the refund workflow and retry, a 100,000-order import, and database quality checks passed. See the [measured PostgreSQL report](docs/implementation/postgres-integration-2026-09-30.md). Set `DATABASE_URL` to a PostgreSQL URL to run the API and worker against another local PostgreSQL installation.
 
 ## Ubuntu setup and no-key mock run
 
-Tested here with Python 3.12.3. Ubuntu 24.04 with Python 3.12, `uv`, and Node 22 is the intended local setup; container startup requires Docker Compose and has not been run in this workspace.
+Tested here with Python 3.12.3. Ubuntu 24.04 with Python 3.12, `uv`, and Node 22 is the intended local setup. The following SQLite commands provide a quick mock fallback without PostgreSQL or Docker:
 
 ```bash
 uv venv .venv
@@ -59,7 +71,7 @@ To regenerate and independently validate large synthetic CSV worlds:
 .venv/bin/python data/generator/validate.py data/generated/scale-1m
 ```
 
-The ignored CSV outputs are rebuilt from a fixed seed and clock. [Measured generation results](docs/implementation/data-generation-2026-09-29.md) include row counts, time, machine, and independent validation results. `data/generator/import_postgres.py` streams validated CSV files with PostgreSQL `COPY` after the demo policy has been seeded; it has not been exercised against a PostgreSQL service here.
+The ignored CSV outputs are rebuilt from a fixed seed and clock. [Measured generation results](docs/implementation/data-generation-2026-09-29.md) include row counts, time, machine, and independent validation results. `data/generator/import_postgres.py` streams validated CSV files with PostgreSQL `COPY` after the demo policy has been seeded. The complete `realistic-100k-v3` world was imported into a temporary PostgreSQL 16 database and passed `scripts/verify_postgres.py`; see the [integration report](docs/implementation/postgres-integration-2026-09-30.md).
 
 ## Containers, OIDC, and external integrations
 

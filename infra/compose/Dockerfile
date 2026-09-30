@@ -6,6 +6,7 @@ COPY apps /app/apps
 COPY packages /app/packages
 COPY prompts /app/prompts
 COPY services /app/services
+COPY scripts /app/scripts
 COPY infra/migrations /app/infra/migrations
 COPY alembic.ini /app/alembic.ini
 RUN uv sync --locked --no-dev --extra observability

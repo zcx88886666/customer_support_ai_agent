@@ -1,6 +1,6 @@
 # Implementation and verification log
 
-Updated 2026-09-29. This log records encountered failures, fixes, and open integration gates. It is not a claim that the v6 plan is fully finished.
+Updated 2026-09-30. This log records encountered failures, fixes, and open integration gates. It is not a claim that the v6 plan is fully finished.
 
 ## Resolved during implementation
 
@@ -18,18 +18,23 @@ Updated 2026-09-29. This log records encountered failures, fixes, and open integ
 | Backup restore proof was missing | Created `/tmp/resolveai-backup-20260929.bundle` from the committed repository, verified complete history, cloned it to `/tmp/resolveai-restore-20260929`, confirmed HEAD `cd94ed7`, and loaded `release-v1` successfully from the restored Prompt catalog. Bundle SHA-256: `e9acc987f302faa93ba5a3248a97894b5d36da3c296ac29cf1945e30af20ef90`. This is a local drill; no separate offline device was available. |
 | Received returns had no deadline warning | Added a one-shot, idempotent 24-hour warning and overdue alert with an audit event, supervisor read endpoint, and supervisor UI list. The endpoint suppresses completed refunds and superseded due-soon alerts. The new migration upgraded on SQLite, and boundary/retry/role tests plus the web build passed. Compose invokes the worker every 30 seconds, but live delivery remains unverified. |
 | The HTTP path lacked an automated cross-role refund check | Added an isolated TestClient workflow covering another customer's denial, idempotent return retry, warehouse receipt/inspection, approval-before-issue, supervisor role rejection, one ledger entry on worker retry, and audit actions. The test passed on SQLite. |
+| No real PostgreSQL integration had been run | Downloaded PostgreSQL 16.15 and pgvector 0.6.0 packages into `/tmp`, initialized an unprivileged server, and ran clean migrations, a vector operation, the full synthetic refund flow and replay, 100k `COPY`, and read-only quality checks. See [PostgreSQL report](postgres-integration-2026-09-30.md). |
+| PostgreSQL rejected the active-policy index migration | SQLite accepted `active IS 1`; PostgreSQL did not. Changed only the PostgreSQL predicate to `active IS TRUE` and reran migrations on an empty database. |
+| PostgreSQL migrations did not enable pgvector | Added conditional Alembic revision `9d24757b98e1` that creates `vector` on PostgreSQL and leaves SQLite unchanged. A clean migration and a vector distance query passed. |
+| First 100k import targeted an older partial generated directory | Retried against independently validated `realistic-100k-v3`; all 17 CSV tables imported in 6.508 seconds. |
+| Restricted sandbox stalled FastAPI TestClient after the PostgreSQL changes | A fault-handler stack showed a blocked AnyIO portal; rerunning the unchanged 22-test suite and 25-case smoke runner outside the restricted sandbox passed. |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
 | Gate | Current evidence and next concrete action |
 |---|---|
-| Docker/PostgreSQL/Keycloak/Jaeger integration | `docker`/`podman` are unavailable here. Compose, migrations, realm import, MCP, OIDC claims, PostgresSaver, OTLP export, PostgreSQL COPY, refund worker concurrency, and container restart recovery need a Docker-capable Ubuntu run. SQLite migrations were upgraded successfully. The Git bundle restore was tested locally, but the bundle still needs copying to a separate offline medium. |
+| Docker/PostgreSQL 17/Keycloak/Jaeger integration | `docker`/`podman` are unavailable here. PostgreSQL 16 migrations, pgvector, COPY, and business flow passed in an isolated local server; the Compose PostgreSQL 17 image and full API/worker/MCP/Keycloak/OTLP interactions remain unverified. PostgresSaver, refund worker concurrency, and container restart recovery also remain open. The Git bundle still needs copying to a separate offline medium. |
 | Langfuse Cloud | No project name, public/secret keys, or base URL were provided. Local inference and eval do not depend on Cloud. With keys, run mirror sync/drift check, an eval, export reconciliation, masking canary, dashboard setup, and quota calibration. |
 | OpenRouter real-model path | No key or live model budget was provided. The configured structured intent adapter is unmeasured. Run provider/schema trials, fix provider version, then paired locked evaluations. |
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |
-| Policy retrieval | The no-key retrieval is deterministic lexical/character-gram RRF. PostgreSQL full-text + pgvector embedding indexes, index versioning, and historical policy publication/rollback regression suite remain open. |
+| Policy retrieval | pgvector is installed and its distance operator works in PostgreSQL 16. The no-key retrieval still uses deterministic lexical/character-gram RRF. PostgreSQL full-text + pgvector policy indexes, embeddings, index versioning, and historical policy publication/rollback regression remain open. |
 | Memory A/B | Confirmed preferences, consent, correction, deletion, and ownership are tested. PostgresStore and Mem0 OSS A/B with 40 multi-session stories and live route selection are not complete. Memory does not influence transactional facts. |
-| Operational scale | CSV generation/validation reached the planned 100k and 1m counts. PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, live Compose scheduling, and an actual offline copy are not measured. A local Git bundle restore was verified. |
+| Operational scale | CSV generation/validation reached 100k and 1m counts, and the 100k profile imported into PostgreSQL 16 in 6.508 seconds with zero checked database violations. Million-order PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, live Compose scheduling, and an actual offline copy remain unmeasured. A local Git bundle restore was verified. |
 | Frontend browser behavior | Next.js compile and TypeScript build passed. Playwright role journeys, real Keycloak login, and browser-to-API integration remain unverified. |
 
 ## Last local checks
@@ -41,4 +46,8 @@ apps/web: npm run build             compiled, TypeScript passed
 data/generator/validate.py realistic-100k-v3  100,000 orders, 0 violations, hashes match
 data/generator/validate.py scale-1m-v3       1,000,000 orders, 0 violations, hashes match
 alembic upgrade head on SQLite test DB      passed, including refund deadline alerts
+alembic upgrade head on fresh PostgreSQL 16  passed; pgvector 0.6.0 enabled
+scripts/demo_workflow.py on PostgreSQL 16     one 1,018-cent refund; replay added zero ledger entries
+100k COPY into PostgreSQL 16                 6.508 seconds, 17 tables
+scripts/verify_postgres.py --expected-orders 100025  passed, six violation counts zero
 ```

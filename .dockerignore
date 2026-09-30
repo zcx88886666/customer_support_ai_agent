@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+*.db
+__pycache__
+*.pyc
+.pytest_cache
+.hypothesis
+apps/web/node_modules
+apps/web/.next
+data/generated
+evals/reports
+observability/exports

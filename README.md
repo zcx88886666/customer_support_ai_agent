@@ -1,0 +1,81 @@
+# ResolveAI
+
+ResolveAI is a synthetic, single-company e-commerce after-sales demonstration. It offers a no-key local mock path for customer order lookup, read-only policy and logistics specialists, confirmed return requests, warehouse inspection, supervisor approval, and one idempotent simulated refund. It does not connect to a real payment provider. The [v6 specification](plans/resolveai-v6.md) describes the full target; [verified status](docs/STATUS.md) distinguishes implemented work from remaining integration work.
+
+## Ubuntu setup and no-key mock run
+
+Tested here with Python 3.12.3. Ubuntu 24.04 with Python 3.12, `uv`, and Node 22 is the intended local setup; container startup requires Docker Compose and has not been run in this workspace.
+
+```bash
+uv venv .venv
+UV_CACHE_DIR=/tmp/resolveai-uv-cache uv sync --locked --extra dev --extra observability
+export DATABASE_URL=sqlite:///./resolveai-dev.db
+export AUTH_MODE=mock
+.venv/bin/alembic upgrade head
+.venv/bin/python -m resolveai.seed --clock "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+.venv/bin/uvicorn resolveai.api:app --host 127.0.0.1 --port 8000
+```
+
+The mock API requires both `X-Mock-Actor` and `X-Mock-Role`. Try `cust-01` and `customer` at [the local API docs](http://127.0.0.1:8000/docs). `cust-02` owns demo orders 05, 10, 15, 20, and 25. Mock identity is only for loopback development; set `AUTH_MODE=oidc` and use Keycloak for a shared environment. The API verifies JWT signature, issuer, audience, expiry, role, and customer mapping. The read-only Commerce MCP service also verifies the JWT and order ownership.
+
+The web UI is optional for the mock path:
+
+```bash
+cd apps/web
+npm ci
+npm run dev
+```
+
+Open `http://localhost:3000`. The page exposes the customer, warehouse, and supervisor steps. Support ticket assignment and policy publication are available in the API docs. In mock mode the UI actor and role inputs are development controls, not real authentication.
+
+## Business workflow
+
+1. Customer: `GET /orders`, `GET /orders/{id}/shipments`, and `POST /chat` with a stable `thread_id`. Use `agent_mode=single` or `collab` to compare read-only evidence routing. The response includes `trace_id` and structured specialist findings.
+2. Customer: `POST /returns` with an owned order/item, positive quantity, reason, `confirmed=true`, and an idempotency key. The service recalculates eligibility using the Shanghai business calendar.
+3. Warehouse: `POST /warehouse/returns/{id}/receipt`, then `/inspection`, then `POST /returns/{id}/proposal`.
+4. Supervisor: `GET /supervisor/proposals`, then `POST /supervisor/proposals/{id}/decision`.
+5. Controlled worker: run `.venv/bin/python -m resolveai.worker`. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The customer and Agent APIs have no refund issuance endpoint.
+
+For a full mock HTTP replay on the seeded local database, run `.venv/bin/python scripts/demo_workflow.py`. It is safe to rerun with the same idempotency key; a second run must not add another ledger entry.
+
+An approval can become stale if relevant order facts change. Calling the proposal endpoint again after such a change marks the old proposal stale and creates a new one requiring a new approval. All amounts are integer CNY cents calculated from the recorded paid allocation. The system does not automatically decide damaged goods, delivery disputes, complex payment splits, or exceptions to the demonstrated return policy.
+
+## Verification
+
+```bash
+.venv/bin/pytest -q
+.venv/bin/python evals/runners/run_smoke.py
+cd apps/web && npm run build
+```
+
+The smoke runner validates 25 fixed JSONL cases and runs the collaboration cases in both modes, each against a fresh SQLite database through the authenticated HTTP API. It writes `manifest.json`, `case_results.jsonl`, `summary.json`, and `report.html` under ignored `evals/reports/<run_id>/`. `summary.json` is the local machine-readable gate. These cases are synthetic development cases, not a human-reviewed locked benchmark or a measured real-model comparison.
+
+To regenerate and independently validate large synthetic CSV worlds:
+
+```bash
+.venv/bin/python data/generator/generate.py --profile realistic --output data/generated/realistic-100k
+.venv/bin/python data/generator/validate.py data/generated/realistic-100k
+.venv/bin/python data/generator/generate.py --profile scale --output data/generated/scale-1m
+.venv/bin/python data/generator/validate.py data/generated/scale-1m
+```
+
+The ignored CSV outputs are rebuilt from a fixed seed and clock. [Measured generation results](docs/implementation/data-generation-2026-09-29.md) include row counts, time, machine, and independent validation results. `data/generator/import_postgres.py` streams validated CSV files with PostgreSQL `COPY` after the demo policy has been seeded; it has not been exercised against a PostgreSQL service here.
+
+## Containers, OIDC, and external integrations
+
+The [Compose file](infra/compose/compose.yaml) defines PostgreSQL with pgvector, Redis, API, web, a refund worker, Commerce MCP, OTel Collector, and Jaeger. The default mock profile binds browser-facing ports to localhost. An optional `oidc` profile imports a Keycloak realm with customer, support, warehouse, and supervisor roles. Set `KC_BOOTSTRAP_ADMIN_PASSWORD` outside the repository, create users in Keycloak, assign their roles, and set a `customer_id` user attribute for customer accounts. Build the web image with `AUTH_MODE=oidc`; the browser uses authorization code with PKCE. Live OIDC, MCP over HTTP, PostgreSQL, and container interactions still require integration testing with Docker.
+
+```bash
+docker compose -f infra/compose/compose.yaml up --build
+KC_BOOTSTRAP_ADMIN_PASSWORD=<set-outside-repo> AUTH_MODE=oidc docker compose -f infra/compose/compose.yaml --profile oidc up --build
+```
+
+The local [Prompt catalog](prompts/catalog/) is the only editable Prompt source. [release-v1](prompts/releases/release-v1.json) locks its hashes to the committed catalog; `PromptRegistry` refuses a hash mismatch at startup. `scripts/release_prompts.py` makes a new manifest only after a catalog commit. `scripts/sync_prompts_to_langfuse.py release-v1` mirrors the exact local content to Langfuse when keys are configured; `--check` detects a missing or drifted release label. Cloud Prompt text is never loaded for inference. The mock path does not need Langfuse keys.
+
+Set `OPENROUTER_API_KEY` to enable structured intent extraction using the exact model ID in [the model registry](packages/agent/models-mock-v1.json). The deterministic mock remains the no-key path. Actual model/provider behavior has not been measured. Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and optionally `LANGFUSE_BASE_URL` for optional Agent span export and score submission. Local OTLP export uses `OTEL_EXPORTER_OTLP_ENDPOINT`; Collector configuration removes named sensitive attributes before Jaeger. To reconcile a run after Cloud ingestion, use `scripts/export_langfuse_run.py <run_id>`. No Cloud account, project, keys, dashboard, or quota observations were available during this implementation.
+
+## Security and backups
+
+Do not commit `.env`, access tokens, real customer data, raw private conversations, generated million-row CSV files, or unredacted traces. The repository ignores local databases, reports, large data, and export folders. Backup the Git repository and release manifest to a separate local/offline medium, then periodically restore to a new directory and compare the catalog commit and SHA-256 values. Git alone is not an offline backup.
+
+The remaining v6 gates, failed commands, and external prerequisites are tracked in [implementation issues](docs/implementation/ISSUES.md) and [status](docs/STATUS.md). The project should not be described as production deployed or fully validated while those gates remain open.

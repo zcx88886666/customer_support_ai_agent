@@ -1,0 +1,109 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: resolveai
+      POSTGRES_DB: resolveai
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resolveai"]
+      interval: 5s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/resolveai}
+      OIDC_AUDIENCE: resolveai-api
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}
+      PROMPT_RELEASE: release-v1
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+        NEXT_PUBLIC_AUTH_MODE: ${AUTH_MODE:-mock}
+        NEXT_PUBLIC_OIDC_URL: http://localhost:8080
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_AUTH_MODE: ${AUTH_MODE:-mock}
+      NEXT_PUBLIC_OIDC_URL: http://localhost:8080
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+    command: ["sh", "-c", "while true; do python -m resolveai.worker; sleep 30; done"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
+    depends_on:
+      postgres:
+        condition: service_healthy
+  mcp:
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+    command: ["uvicorn", "services.commerce_mcp.server:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
+      AUTH_MODE: oidc
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/resolveai}
+      OIDC_AUDIENCE: resolveai-api
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}
+      MCP_RESOURCE_URL: http://localhost:8001/mcp
+      MCP_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+  jaeger:
+    image: jaegertracing/all-in-one:1.71.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.133.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - jaeger
+  keycloak:
+    profiles: ["oidc"]
+    image: quay.io/keycloak/keycloak:26.3.3
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-}
+    volumes:
+      - ./keycloak-realm.json:/opt/keycloak/data/import/resolveai.json:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+volumes:
+  pgdata:
+  redisdata:

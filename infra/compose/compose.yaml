@@ -28,11 +28,19 @@ services:
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}
       PROMPT_RELEASE: release-v1
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_SERVICE_NAME: resolveai-api
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,7 +59,8 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
   worker:
     build:
       context: ../..
@@ -60,11 +69,13 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_SERVICE_NAME: resolveai-worker
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
   mcp:
     build:
@@ -82,7 +93,7 @@ services:
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
   jaeger:
     image: jaegertracing/all-in-one:1.71.0

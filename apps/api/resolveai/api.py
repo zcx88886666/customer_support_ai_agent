@@ -14,6 +14,7 @@ from . import domain as d, models as m
 from .auth import Principal, principal
 from .db import get_db, init_db
 from .config import settings
+from .checkpoint import setup_checkpointer
 from .prompts import PromptRegistry
 from .telemetry import configure_telemetry, tracer, current_trace_id
 from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, PolicyDraftInput, PreferenceInput, ReceiptInput, ReturnInput, TicketAssignInput
@@ -22,6 +23,7 @@ from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, Po
 async def lifespan(_app: FastAPI):
     PromptRegistry(settings.prompt_release)
     init_db()
+    setup_checkpointer()
     configure_telemetry()
     yield
 

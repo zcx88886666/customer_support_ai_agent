@@ -23,24 +23,27 @@ Updated 2026-09-30. This log records encountered failures, fixes, and open integ
 | PostgreSQL migrations did not enable pgvector | Added conditional Alembic revision `9d24757b98e1` that creates `vector` on PostgreSQL and leaves SQLite unchanged. A clean migration and a vector distance query passed. |
 | First 100k import targeted an older partial generated directory | Retried against independently validated `realistic-100k-v3`; all 17 CSV tables imported in 6.508 seconds. |
 | Restricted sandbox stalled FastAPI TestClient after the PostgreSQL changes | A fault-handler stack showed a blocked AnyIO portal; rerunning the unchanged 22-test suite and 25-case smoke runner outside the restricted sandbox passed. |
+| First Docker chat request timed out | `PostgresSaver.setup()` attempted a concurrent index while the same request held a PostgreSQL transaction. Moved checkpoint setup to API startup; Docker chat then returned HTTP 200 in under a second. |
+| PostgreSQL checkpoint replay included prior-turn findings | Scoped the graph checkpoint key to customer, thread, and plan revision; a MemorySaver regression test and Docker two-turn replay each returned two findings from the current revision only. |
+| Docker API startup showed an OTel provider warning and metrics 404 exports | Reused an existing SDK provider, set Compose service names, and disabled unused metrics export. Rebuilt API/worker logs showed no recurrence; Jaeger received a seven-span chat trace under `resolveai-api`. |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
 | Gate | Current evidence and next concrete action |
 |---|---|
-| Docker/PostgreSQL 17/Keycloak/Jaeger integration | `docker`/`podman` are unavailable here. PostgreSQL 16 migrations, pgvector, COPY, and business flow passed in an isolated local server; the Compose PostgreSQL 17 image and full API/worker/MCP/Keycloak/OTLP interactions remain unverified. PostgresSaver, refund worker concurrency, and container restart recovery also remain open. The Git bundle still needs copying to a separate offline medium. |
+| Keycloak/MCP and deeper Docker operations | Docker Compose PostgreSQL 17, PostgresSaver chat, worker execution, API restart, and OTel→Jaeger trace passed. Keycloak sign-in and authenticated MCP calls still require configured users; refund worker concurrency, full container restart recovery, and live deadline delivery remain unverified. The Git bundle still needs copying to a separate offline medium. |
 | Langfuse Cloud | No project name, public/secret keys, or base URL were provided. Local inference and eval do not depend on Cloud. With keys, run mirror sync/drift check, an eval, export reconciliation, masking canary, dashboard setup, and quota calibration. |
 | OpenRouter real-model path | No key or live model budget was provided. The configured structured intent adapter is unmeasured. Run provider/schema trials, fix provider version, then paired locked evaluations. |
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |
 | Policy retrieval | pgvector is installed and its distance operator works in PostgreSQL 16. The no-key retrieval still uses deterministic lexical/character-gram RRF. PostgreSQL full-text + pgvector policy indexes, embeddings, index versioning, and historical policy publication/rollback regression remain open. |
 | Memory A/B | Confirmed preferences, consent, correction, deletion, and ownership are tested. PostgresStore and Mem0 OSS A/B with 40 multi-session stories and live route selection are not complete. Memory does not influence transactional facts. |
-| Operational scale | CSV generation/validation reached 100k and 1m counts, and the 100k profile imported into PostgreSQL 16 in 6.508 seconds with zero checked database violations. Million-order PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, live Compose scheduling, and an actual offline copy remain unmeasured. A local Git bundle restore was verified. |
+| Operational scale | CSV generation/validation reached 100k and 1m counts, and the 100k profile imported into PostgreSQL 16 in 6.508 seconds with zero checked database violations. Million-order PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, live deadline scheduling, and an actual offline copy remain unmeasured. A local Git bundle restore was verified. |
 | Frontend browser behavior | Next.js compile and TypeScript build passed. Playwright role journeys, real Keycloak login, and browser-to-API integration remain unverified. |
 
 ## Last local checks
 
 ```text
-.venv/bin/pytest -q                 22 passed (including 1,000 refund properties, OIDC, multi-turn slots, deadline alerts, and cross-role HTTP refund)
+.venv/bin/pytest -q                 23 passed (including 1,000 refund properties, OIDC, multi-turn slots, deadline alerts, cross-role HTTP refund, and checkpoint turn isolation)
 .venv/bin/python evals/runners/run_smoke.py  25 unique cases, 28 mock executions passed
 apps/web: npm run build             compiled, TypeScript passed
 data/generator/validate.py realistic-100k-v3  100,000 orders, 0 violations, hashes match
@@ -50,4 +53,7 @@ alembic upgrade head on fresh PostgreSQL 16  passed; pgvector 0.6.0 enabled
 scripts/demo_workflow.py on PostgreSQL 16     one 1,018-cent refund; replay added zero ledger entries
 100k COPY into PostgreSQL 16                 6.508 seconds, 17 tables
 scripts/verify_postgres.py --expected-orders 100025  passed, six violation counts zero
+Docker Compose PostgreSQL 17.11/pgvector 0.8.6  25 orders, one approved refund ledger, six violation counts zero
+Docker chat and restart replay               HTTP 200; two fresh findings on each turn; cross-customer HTTP 404
+Docker OTel to Jaeger                         seven-span chat trace under resolveai-api
 ```

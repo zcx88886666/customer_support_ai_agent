@@ -26,7 +26,8 @@ def configure_telemetry():
     with _lock:
         if _configured:
             return
-        provider = TracerProvider(resource=Resource.create({"service.name": "resolveai-api"}))
+        current = trace.get_tracer_provider()
+        provider = current if isinstance(current, TracerProvider) else TracerProvider(resource=Resource.create({"service.name": "resolveai-api"}))
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         if endpoint:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -49,7 +50,8 @@ def configure_telemetry():
                 return MaskOtelSpansResult(span_patches=patches) if patches else None
 
             _langfuse = Langfuse(public_key=os.environ["LANGFUSE_PUBLIC_KEY"], secret_key=os.environ["LANGFUSE_SECRET_KEY"], base_url=os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"), sample_rate=float(os.getenv("LANGFUSE_SAMPLE_RATE", "1")), tracer_provider=provider, should_export_span=should_export, mask_otel_spans=redact)
-        trace.set_tracer_provider(provider)
+        if provider is not current:
+            trace.set_tracer_provider(provider)
         _configured = True
 
 

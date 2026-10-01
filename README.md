@@ -2,17 +2,27 @@
 
 ResolveAI is a synthetic, single-company e-commerce after-sales demonstration. It offers a no-key local mock path for customer order lookup, read-only policy and logistics specialists, confirmed return requests, warehouse inspection, supervisor approval, and one idempotent simulated refund. It does not connect to a real payment provider. PostgreSQL with pgvector is the v6 primary database; SQLite is the lightweight fallback for local mock tests. The [v6 specification](plans/resolveai-v6.md) describes the full target; [verified status](docs/STATUS.md) distinguishes implemented work from remaining integration work.
 
-## PostgreSQL-backed run
+## Docker Compose run (recommended)
 
-The Compose profile configures PostgreSQL with pgvector for API, worker, and MCP. On a Docker-capable host, start a fresh local stack and seed its demo data:
+From the repository root, start the local mock stack with PostgreSQL 17, pgvector, API, web UI, refund worker, Commerce MCP, OTel Collector, and Jaeger. No API keys are needed:
 
 ```bash
-docker compose -f infra/compose/compose.yaml up --build -d postgres api worker web
-docker compose -f infra/compose/compose.yaml exec api python -m resolveai.seed --clock "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
-docker compose -f infra/compose/compose.yaml exec api python scripts/verify_postgres.py --expected-orders 25
+docker compose -f infra/compose/compose.yaml up --build -d
+docker compose -f infra/compose/compose.yaml ps
+docker compose -f infra/compose/compose.yaml exec -T api python scripts/verify_postgres.py --expected-orders 25
 ```
 
-Open `http://localhost:3000` for the mock role workflow. The API container applies Alembic migrations before starting; the PostgreSQL migration enables pgvector. This exact Compose stack has not run in this workspace because Docker is unavailable. A separate local PostgreSQL **16.15** integration test did run: migrations, pgvector operations, the refund workflow and retry, a 100,000-order import, and database quality checks passed. See the [measured PostgreSQL report](docs/implementation/postgres-integration-2026-09-30.md). Set `DATABASE_URL` to a PostgreSQL URL to run the API and worker against another local PostgreSQL installation.
+The API runs Alembic migrations and seeds 25 synthetic orders on first start. Repeated starts keep the existing PostgreSQL volume and demo data. Open `http://localhost:3000` for the mock role workflow (`cust-01` as `customer`, then `warehouse-01` as `warehouse` and `supervisor-01` as `supervisor`). API docs are at `http://localhost:8000/docs`; Jaeger is at `http://localhost:16686`. The mock identity controls are for local loopback use only. The Commerce MCP container starts but requires Keycloak-issued JWTs, so its tools are unavailable in the default mock mode.
+
+To replay the synthetic approval-to-refund workflow, inspect logs, or stop the stack while retaining its data:
+
+```bash
+docker compose -f infra/compose/compose.yaml exec -T api python scripts/demo_workflow.py
+docker compose -f infra/compose/compose.yaml logs --tail=100 api worker
+docker compose -f infra/compose/compose.yaml down
+```
+
+The [Docker integration report](docs/implementation/docker-compose-2026-09-30.md) records the actual PostgreSQL 17, chat, refund, restart, and Jaeger checks. A separate [PostgreSQL 16 report](docs/implementation/postgres-integration-2026-09-30.md) covers the 100,000-order import. Set `DATABASE_URL` to a PostgreSQL URL to run API and worker against another local PostgreSQL installation.
 
 ## Ubuntu setup and no-key mock run
 
@@ -46,7 +56,7 @@ Open `http://localhost:3000`. The page exposes the customer, warehouse, and supe
 2. Customer: `POST /returns` with an owned order/item, positive quantity, reason, `confirmed=true`, and an idempotency key. The service recalculates eligibility using the Shanghai business calendar.
 3. Warehouse: `POST /warehouse/returns/{id}/receipt`, then `/inspection`, then `POST /returns/{id}/proposal`.
 4. Supervisor: `GET /supervisor/proposals`, then `POST /supervisor/proposals/{id}/decision`.
-5. Controlled worker: run `.venv/bin/python -m resolveai.worker`. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose calls the worker every 30 seconds; that schedule has not been run here. The customer and Agent APIs have no refund issuance endpoint.
+5. Controlled worker: run `.venv/bin/python -m resolveai.worker` for the direct local setup. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose calls the worker every 30 seconds; the worker ran in the verified Docker stack. The customer and Agent APIs have no refund issuance endpoint.
 
 For a full mock HTTP replay on the seeded local database, run `.venv/bin/python scripts/demo_workflow.py`. It is safe to rerun with the same idempotency key; a second run must not add another ledger entry.
 
@@ -75,10 +85,9 @@ The ignored CSV outputs are rebuilt from a fixed seed and clock. [Measured gener
 
 ## Containers, OIDC, and external integrations
 
-The [Compose file](infra/compose/compose.yaml) defines PostgreSQL with pgvector, Redis, API, web, a refund worker, Commerce MCP, OTel Collector, and Jaeger. The default mock profile binds browser-facing ports to localhost. An optional `oidc` profile imports a Keycloak realm with customer, support, warehouse, and supervisor roles. Set `KC_BOOTSTRAP_ADMIN_PASSWORD` outside the repository, create users in Keycloak, assign their roles, and set a `customer_id` user attribute for customer accounts. Build the web image with `AUTH_MODE=oidc`; the browser uses authorization code with PKCE. Live OIDC, MCP over HTTP, PostgreSQL, and container interactions still require integration testing with Docker.
+The [Compose file](infra/compose/compose.yaml) binds browser-facing ports to localhost. An optional `oidc` profile imports a Keycloak realm with customer, support, warehouse, and supervisor roles. Set `KC_BOOTSTRAP_ADMIN_PASSWORD` outside the repository, create users in Keycloak, assign their roles, and set a `customer_id` user attribute for customer accounts. Build the web image with `AUTH_MODE=oidc`; the browser uses authorization code with PKCE. Keycloak sign-in and authenticated MCP tool calls have not been integration tested.
 
 ```bash
-docker compose -f infra/compose/compose.yaml up --build
 KC_BOOTSTRAP_ADMIN_PASSWORD=<set-outside-repo> AUTH_MODE=oidc docker compose -f infra/compose/compose.yaml --profile oidc up --build
 ```
 

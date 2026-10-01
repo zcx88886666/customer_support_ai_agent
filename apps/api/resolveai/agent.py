@@ -300,7 +300,7 @@ def run_chat(db: Session, customer_id: str, body: ChatInput) -> dict:
         from .checkpoint import parent_checkpointer
         with parent_checkpointer() as checkpointer:
             graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer)
-            state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}"}})
+            state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:r{revision}"}})
         result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode}
     if result["status"] == "handoff":
         ticket = db.get(m.Ticket, old.get("ticket_id")) if old.get("ticket_id") else None

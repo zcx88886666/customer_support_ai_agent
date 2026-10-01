@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from langgraph.checkpoint.memory import MemorySaver
 
 from resolveai.agent import run_chat, validate_finding
 from resolveai.domain import DomainError
@@ -22,6 +24,23 @@ def test_single_domain_and_thread_isolation(db):
     assert len(result["findings"]) == 1
     with pytest.raises(DomainError):
         run_chat(db, "cust-02", ChatInput(thread_id="thread-2", message="政策是什么"))
+
+
+def test_checkpoint_does_not_replay_previous_turn_findings(db, monkeypatch):
+    saver = MemorySaver()
+
+    @contextmanager
+    def checkpointer():
+        yield saver
+
+    monkeypatch.setattr("resolveai.checkpoint.parent_checkpointer", checkpointer)
+    body = ChatInput(thread_id="checkpoint-turns", message="包裹没到能退吗", order_id="demo-order-02", agent_mode="collab")
+    first = run_chat(db, "cust-01", body)
+    db.flush()
+    second = run_chat(db, "cust-01", body)
+    assert len(first["findings"]) == len(second["findings"]) == 2
+    assert {finding["plan_revision"] for finding in first["findings"]} == {1}
+    assert {finding["plan_revision"] for finding in second["findings"]} == {2}
 
 
 def test_agent_cannot_refund_or_submit_without_confirmation(db):

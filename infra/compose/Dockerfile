@@ -12,4 +12,4 @@ COPY alembic.ini /app/alembic.ini
 RUN uv sync --locked --no-dev --extra observability
 ENV PATH=/app/.venv/bin:$PATH
 ENV PYTHONPATH=/app/apps/api:/app/packages:/app
-CMD ["sh", "-c", "alembic upgrade head && uvicorn resolveai.api:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && python -m resolveai.seed --clock \"$(date -u +%Y-%m-%dT%H:%M:%S+00:00)\" && uvicorn resolveai.api:app --host 0.0.0.0 --port 8000"]

@@ -16,6 +16,7 @@ from .telemetry import tracer, current_trace_id
 from .openrouter import configured as model_configured, call_structured, ModelUnavailable
 from .config import settings
 from .policy_retrieval import retrieve
+from .commerce_client import read_order, CommerceUnavailable
 
 
 class AgentState(TypedDict, total=False):
@@ -45,6 +46,13 @@ def classify(text: str) -> RouteDecision:
     lower = text.lower()
     if any(term in lower for term in ("人工", "真人客服", "human agent")):
         return RouteDecision(route="human_handoff", intents=["human_request"])
+    # A question about an undelivered parcel is an inquiry. Model intent labels
+    # cannot turn it into a return submission that asks for item/quantity slots.
+    if (any(term in lower for term in ("包裹", "物流", "配送", "shipment", "delivery"))
+            and any(term in lower for term in ("没到", "未签收", "not delivered", "not arrived"))
+            and any(term in lower for term in ("能退", "可以退", "退吗", "return"))
+            and not any(term in lower for term in ("我要退", "申请退货", "提交退货", "确认提交"))):
+        return RouteDecision(route="knowledge", intents=["shipment_tracking", "policy_qa"])
     if model_configured():
         try:
             candidate = call_structured("intent", {"message": text[:1000]}, RouteDecision, settings.prompt_release)
@@ -127,9 +135,17 @@ def build_policy_graph(db: Session):
     return graph.compile()
 
 
-def build_order_graph(db: Session, customer_id: str):
+def build_order_graph(db: Session, customer_id: str, access_token: str | None = None):
     def inspect(state: SpecialistState):
         task = DelegationTask.model_validate(state["task"])
+        if settings.auth_mode == "oidc":
+            try:
+                order, shipments = read_order(access_token, task.verified_order_ref)
+                shipment = shipments[0] if len(shipments) == 1 else None
+                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order["status"], "shipment_status": shipment["status"] if shipment else None, "delivered_at": shipment.get("delivered_at") if shipment else None}, source_ids=[order["id"]] + ([shipment["id"]] if shipment else []), source_version=str(order["version"]), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["package_ambiguous_or_missing"], tool_calls=2)
+            except (CommerceUnavailable, KeyError, TypeError):
+                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["commerce_unavailable"], tool_calls=2)
+            return {"finding": finding.model_dump(mode="json")}
         order = d.owned_order(db, customer_id, task.verified_order_ref)
         shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
         if len(shipments) > 1:
@@ -145,9 +161,9 @@ def build_order_graph(db: Session, customer_id: str):
     return graph.compile()
 
 
-def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=None):
+def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=None, access_token: str | None = None):
     policy_graph = build_policy_graph(db)
-    order_graph = build_order_graph(db, customer_id)
+    order_graph = build_order_graph(db, customer_id, access_token)
 
     def route(state: AgentState):
         decision = RouteDecision.model_validate(state["route_candidate"]) if state.get("route_candidate") else classify(state["text"])
@@ -263,7 +279,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
     return graph.compile(checkpointer=checkpointer)
 
 
-def run_chat(db: Session, customer_id: str, body: ChatInput) -> dict:
+def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: str | None = None) -> dict:
     thread = db.get(m.ThreadState, body.thread_id)
     if thread and thread.customer_id != customer_id:
         raise d.DomainError("thread_not_found", "Thread unavailable", 404)
@@ -299,7 +315,7 @@ def run_chat(db: Session, customer_id: str, body: ChatInput) -> dict:
     else:
         from .checkpoint import parent_checkpointer
         with parent_checkpointer() as checkpointer:
-            graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer)
+            graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token)
             state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:r{revision}"}})
         result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode}
     if result["status"] == "handoff":

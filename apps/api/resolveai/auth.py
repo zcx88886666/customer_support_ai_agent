@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jwt
 from fastapi import Depends, Header, HTTPException
@@ -14,6 +14,7 @@ class Principal:
     subject: str
     roles: frozenset[str]
     customer_id: str | None = None
+    access_token: str | None = field(default=None, repr=False, compare=False)
 
     def require(self, role: str):
         if role not in self.roles:
@@ -42,7 +43,7 @@ def principal(authorization: str | None = Header(default=None), x_mock_actor: st
     customer_id = claims.get("customer_id") if "customer" in roles else None
     if "customer" in roles and not customer_id:
         raise HTTPException(403, "Customer mapping missing")
-    return Principal(claims["sub"], roles, customer_id)
+    return Principal(claims["sub"], roles, customer_id, token)
 
 
 PrincipalDep = Depends(principal)

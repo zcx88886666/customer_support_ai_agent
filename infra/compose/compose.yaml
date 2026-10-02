@@ -27,6 +27,8 @@ services:
       OIDC_AUDIENCE: resolveai-api
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}
       PROMPT_RELEASE: release-v1
+      COMMERCE_MCP_URL: http://mcp:8001/mcp
+      MCP_AUDIENCE: http://localhost:8001/mcp
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_METRICS_EXPORTER: none
@@ -93,6 +95,7 @@ services:
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}
       MCP_RESOURCE_URL: http://localhost:8001/mcp
       MCP_HOST: 0.0.0.0
+      MCP_AUDIENCE: http://localhost:8001/mcp
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:
@@ -118,11 +121,14 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-}
+      KC_HOSTNAME: http://localhost:8080
     volumes:
       - ./keycloak-realm.json:/opt/keycloak/data/import/resolveai.json:ro
+      - keycloakdata:/opt/keycloak/data
     ports:
       - "127.0.0.1:8080:8080"
 volumes:
   pgdata:
   redisdata:
   observability:
+  keycloakdata:

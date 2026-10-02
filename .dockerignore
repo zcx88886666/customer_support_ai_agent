@@ -1,6 +1,9 @@
 .git
 .venv
 .env
+.local
+apps/web/test-results
+apps/web/playwright-report
 *.db
 __pycache__
 *.pyc

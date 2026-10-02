@@ -26,13 +26,13 @@ class KeycloakVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             key = self.jwks.get_signing_key_from_jwt(token).key
-            claims = jwt.decode(token, key, algorithms=["RS256"], audience=settings.oidc_audience, issuer=settings.oidc_issuer, options={"require": ["exp", "iat", "iss", "aud", "sub"]})
+            claims = jwt.decode(token, key, algorithms=["RS256"], audience=settings.mcp_audience, issuer=settings.oidc_issuer, options={"require": ["exp", "iat", "iss", "aud", "sub"]})
         except jwt.PyJWTError:
             return None
         roles = claims.get("realm_access", {}).get("roles", [])
         if "customer" not in roles or not claims.get("customer_id"):
             return None
-        return AccessToken(token=token, client_id=claims.get("azp", "resolveai-web"), scopes=[], expires_at=claims["exp"], subject=claims["sub"], claims={"customer_id": claims["customer_id"], "roles": roles})
+        return AccessToken(token=token, client_id=claims.get("azp", "resolveai-web"), scopes=[], expires_at=claims["exp"], resource=settings.mcp_audience, subject=claims["sub"], claims={"customer_id": claims["customer_id"], "roles": roles})
 
 
 resource_url = os.getenv("MCP_RESOURCE_URL", "http://localhost:8001/mcp")

@@ -1,12 +1,22 @@
 {
   "realm": "resolveai",
   "enabled": true,
-  "roles": {"realm": [
-    {"name": "customer"},
-    {"name": "support"},
-    {"name": "warehouse"},
-    {"name": "supervisor"}
-  ]},
+  "roles": {
+    "realm": [
+      {
+        "name": "customer"
+      },
+      {
+        "name": "support"
+      },
+      {
+        "name": "warehouse"
+      },
+      {
+        "name": "supervisor"
+      }
+    ]
+  },
   "clients": [
     {
       "clientId": "resolveai-api",
@@ -22,12 +32,49 @@
       "protocol": "openid-connect",
       "publicClient": true,
       "standardFlowEnabled": true,
-      "redirectUris": ["http://localhost:3000/*"],
-      "webOrigins": ["http://localhost:3000"],
+      "redirectUris": [
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000"
+      ],
       "protocolMappers": [
-        {"name": "resolveai-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper", "consentRequired": false, "config": {"included.client.audience": "resolveai-api", "access.token.claim": "true"}},
-        {"name": "customer-id", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-attribute-mapper", "consentRequired": false, "config": {"user.attribute": "customer_id", "claim.name": "customer_id", "jsonType.label": "String", "access.token.claim": "true"}}
-      ]
+        {
+          "name": "resolveai-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "resolveai-api",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "customer-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "customer_id",
+            "claim.name": "customer_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "commerce-mcp-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "http://localhost:8001/mcp",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
     }
   ]
 }

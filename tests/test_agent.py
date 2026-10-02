@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from langgraph.checkpoint.memory import MemorySaver
 
-from resolveai.agent import run_chat, validate_finding
+from resolveai.agent import classify, run_chat, validate_finding
 from resolveai.domain import DomainError
 from resolveai import models as m
 from resolveai.schemas import ChatInput, DelegationTask, SpecialistFinding
@@ -17,6 +17,19 @@ def test_composite_dispatch_and_unreceived_limit(db):
     assert len(result["findings"]) == 2
     assert "尚未确认签收" in result["answer"]
     assert {finding["source_version"] for finding in result["findings"]} == {"1", "policy-demo-v1"}
+
+
+def test_undelivered_return_question_is_not_a_submission(db, monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="after_sales", intents=["return_request"]))
+    result = run_chat(db, "cust-01", ChatInput(thread_id="undelivered-question", message="包裹没到能退吗", order_id="demo-order-02", agent_mode="collab"))
+    assert result["status"] == "answered"
+    assert result["route"]["intents"] == ["shipment_tracking", "policy_qa"]
+    assert len(result["findings"]) == 2
+    assert "尚未确认签收" in result["answer"]
 
 
 def test_single_domain_and_thread_isolation(db):

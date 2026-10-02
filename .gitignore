@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .env
+.local/
+apps/web/test-results/
+apps/web/playwright-report/
 *.db
 *.sqlite*
 evals/reports/*/

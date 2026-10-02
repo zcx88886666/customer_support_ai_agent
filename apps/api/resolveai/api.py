@@ -29,7 +29,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="ResolveAI", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_methods=["GET", "POST"], allow_headers=["authorization", "content-type", "x-mock-actor", "x-mock-role"])
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["authorization", "content-type", "x-mock-actor", "x-mock-role"])
 
 
 @app.middleware("http")
@@ -249,7 +249,7 @@ def assign_ticket(ticket_id: str, body: TicketAssignInput, actor: Principal = De
 def chat(body: ChatInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("customer")
     from .agent import run_chat
-    result = run_chat(db, actor.customer_id, body)
+    result = run_chat(db, actor.customer_id, body, access_token=actor.access_token)
     db.commit()
     return result
 
@@ -259,6 +259,6 @@ def chat_stream(body: ChatInput, actor: Principal = Depends(principal), db: Sess
     actor.require("customer")
     from .agent import run_chat
     import json
-    result = run_chat(db, actor.customer_id, body)
+    result = run_chat(db, actor.customer_id, body, access_token=actor.access_token)
     db.commit()
     return StreamingResponse(iter(["event: result\ndata: " + json.dumps(result, ensure_ascii=False, default=str) + "\n\n"]), media_type="text/event-stream")

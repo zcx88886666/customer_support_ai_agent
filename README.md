@@ -85,11 +85,18 @@ The ignored CSV outputs are rebuilt from a fixed seed and clock. [Measured gener
 
 ## Containers, OIDC, and external integrations
 
-The [Compose file](infra/compose/compose.yaml) binds browser-facing ports to localhost. An optional `oidc` profile imports a Keycloak realm with customer, support, warehouse, and supervisor roles. Set `KC_BOOTSTRAP_ADMIN_PASSWORD` outside the repository, create users in Keycloak, assign their roles, and set a `customer_id` user attribute for customer accounts. Build the web image with `AUTH_MODE=oidc`; the browser uses authorization code with PKCE. Keycloak sign-in and authenticated MCP tool calls have not been integration tested.
+The [Compose file](infra/compose/compose.yaml) binds browser-facing ports to localhost. The optional `oidc` profile imports a Keycloak realm with customer, support, warehouse, and supervisor roles. The browser uses authorization code with PKCE; the local setup and live verification commands follow.
 
 ```bash
-KC_BOOTSTRAP_ADMIN_PASSWORD=<set-outside-repo> AUTH_MODE=oidc docker compose -f infra/compose/compose.yaml --profile oidc up --build
+.venv/bin/python scripts/configure_keycloak.py --prepare
+docker compose --env-file .env -f infra/compose/compose.yaml --profile oidc up -d --build keycloak api mcp web
+.venv/bin/python scripts/configure_keycloak.py
+.venv/bin/python scripts/verify_oidc.py
 ```
+
+These commands create five synthetic local accounts and store their generated passwords in ignored `.local/demo-accounts.json` (mode `600`). The prepare command sets `AUTH_MODE=oidc` in ignored `.env` while preserving existing OpenRouter/Langfuse entries. Open `http://localhost:3000` for browser sign-in. Keep the hostname as `localhost` for both web and Keycloak; using `127.0.0.1` for one of them breaks the browser OIDC session. `verify_oidc.py` exercises authorization-code login with PKCE, customer ownership, role denial, and authenticated MCP reads. The MCP audience is `http://localhost:8001/mcp`, distinct from the API audience. The graph passes the signed customer token only to the read-only MCP client at runtime; no token is written to checkpoints.
+
+The browser suite runs with `cd apps/web && npm run test:e2e` after installing Playwright Chromium, or with `CHROME_TEST_PATH` pointing at an existing Chrome binary. It covers customer, support, warehouse, and supervisor sign-in. The test reads only the ignored local account file.
 
 The local [Prompt catalog](prompts/catalog/) is the only editable Prompt source. [release-v1](prompts/releases/release-v1.json) locks its hashes to the committed catalog; `PromptRegistry` refuses a hash mismatch at startup. `scripts/release_prompts.py` makes a new manifest only after a catalog commit. `scripts/sync_prompts_to_langfuse.py release-v1` mirrors the exact local content to Langfuse when keys are configured; `--check` detects a missing or drifted release label. Cloud Prompt text is never loaded for inference. The mock path does not need Langfuse keys.
 

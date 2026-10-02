@@ -33,19 +33,19 @@ Updated 2026-10-02. This log records encountered failures, fixes, and open integ
 
 | Gate | Current evidence and next concrete action |
 |---|---|
-| Keycloak/MCP and deeper Docker operations | Docker Compose PostgreSQL 17, PostgresSaver chat, worker execution, API restart, and OTel→Jaeger trace passed. Keycloak sign-in and authenticated MCP calls still require configured users; refund worker concurrency, full container restart recovery, and live deadline delivery remain unverified. The Git bundle still needs copying to a separate offline medium. |
+| Deeper Docker operations | Docker Compose PostgreSQL 17, PostgresSaver chat, worker execution, API restart, OTel→Jaeger trace, Keycloak code+PKCE logins, and authenticated Commerce MCP calls passed. Refund worker concurrency, full container restart recovery, and live deadline delivery remain unverified. The Git bundle still needs copying to a separate offline medium. |
 | Langfuse Cloud | US project credentials now authenticate. Six prompts synced and passed drift checks; a synthetic masking canary passed in Cloud and Jaeger, and a live GPT-4o-mini generation recorded usage/cost and its prompt version. A setup score was read back. Full evaluation export/reconciliation, custom dashboards, and quota calibration remain open. See [integration report](langfuse-integration-2026-10-02.md). |
 | OpenRouter real-model path | A local ignored key and one live GPT-4o-mini structured-intent call now work in Docker. Provider/schema regression trials, cost measurements, model comparison, and paired locked evaluations remain open. |
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |
 | Policy retrieval | pgvector is installed and its distance operator works in PostgreSQL 16. The no-key retrieval still uses deterministic lexical/character-gram RRF. PostgreSQL full-text + pgvector policy indexes, embeddings, index versioning, and historical policy publication/rollback regression remain open. |
 | Memory A/B | Confirmed preferences, consent, correction, deletion, and ownership are tested. PostgresStore and Mem0 OSS A/B with 40 multi-session stories and live route selection are not complete. Memory does not influence transactional facts. |
 | Operational scale | CSV generation/validation reached 100k and 1m counts, and the 100k profile imported into PostgreSQL 16 in 6.508 seconds with zero checked database violations. Million-order PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, live deadline scheduling, and an actual offline copy remain unmeasured. A local Git bundle restore was verified. |
-| Frontend browser behavior | Next.js compile and TypeScript build passed. Playwright role journeys, real Keycloak login, and browser-to-API integration remain unverified. |
+| Frontend browser behavior | Next.js compile and TypeScript build passed. Playwright verified customer/support/warehouse/supervisor login views and customer order list. Full browser return-to-refund journeys remain unverified. |
 
 ## Last local checks
 
 ```text
-.venv/bin/pytest -q                 27 passed (including 1,000 refund properties, OIDC, multi-turn slots, deadline alerts, cross-role HTTP refund, checkpoint turn isolation, strict schema validation, and telemetry masking/filtering/usage)
+.venv/bin/pytest -q                 31 passed (including 1,000 refund properties, signed OIDC/MCP, multi-turn slots, deadline alerts, cross-role HTTP refund, checkpoint turn isolation, strict schema validation, and telemetry masking/filtering/usage)
 .venv/bin/python evals/runners/run_smoke.py  25 unique cases, 28 mock executions passed
 apps/web: npm run build             compiled, TypeScript passed
 data/generator/validate.py realistic-100k-v3  100,000 orders, 0 violations, hashes match

@@ -12,6 +12,8 @@ class Settings:
     oidc_audience: str = os.getenv("OIDC_AUDIENCE", "resolveai-api")
     oidc_jwks_url: str = os.getenv("OIDC_JWKS_URL", "http://localhost:8080/realms/resolveai/protocol/openid-connect/certs")
     prompt_release: str = os.getenv("PROMPT_RELEASE", "release-v1")
+    commerce_mcp_url: str = os.getenv("COMMERCE_MCP_URL", "http://localhost:8001/mcp")
+    mcp_audience: str = os.getenv("MCP_AUDIENCE", "http://localhost:8001/mcp")
 
 
 settings = Settings()

@@ -8,6 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from resolveai.agent import classify, run_chat, validate_finding, review_evidence
 from resolveai.domain import DomainError
 from resolveai import models as m
+from resolveai.policy import activate, create_draft, index_and_verify
 from resolveai.schemas import ChatInput, DelegationTask, SpecialistFinding
 
 
@@ -153,3 +154,57 @@ def test_plan_revision_limit_creates_handoff_ticket(db):
     assert result["status"] == "handoff"
     assert result["plan_revision"] == 4
     assert db.get(m.Ticket, result["ticket_id"]).topic == "clarification limit"
+
+
+def test_order_change_replans_from_fresh_facts(db, monkeypatch):
+    from resolveai import agent
+    calls = 0
+
+    def change_once(task_name, _question, _evidence):
+        nonlocal calls
+        if task_name == "order_agent" and calls == 0:
+            db.get(m.Order, "demo-order-02").version += 1
+            calls += 1
+        return []
+
+    monkeypatch.setattr(agent, "review_evidence", change_once)
+    result = run_chat(db, "cust-01", ChatInput(thread_id="replan-order", message="查包裹物流", order_id="demo-order-02"))
+    assert result["status"] == "answered"
+    assert result["replan_count"] == 1 and result["plan_revision"] == 2
+    assert len(result["findings"]) == 1
+    assert result["findings"][0]["source_version"] == "2"
+
+
+def test_active_policy_change_replans_with_new_bundle(db, monkeypatch):
+    from resolveai import agent
+    changed = False
+
+    def publish_once(task_name, _question, _evidence):
+        nonlocal changed
+        if task_name == "policy_agent" and not changed:
+            bundle = create_draft(db, "support-1", "policy-replan-v2", 8, [{"id": "policy-replan-v2:window", "title": "退货政策", "body": "合格商品签收后可以申请退货。"}], datetime.now(timezone.utc))
+            index_and_verify(db, "supervisor-1", bundle.id)
+            activate(db, "supervisor-1", bundle.id)
+            changed = True
+        return []
+
+    monkeypatch.setattr(agent, "review_evidence", publish_once)
+    result = run_chat(db, "cust-01", ChatInput(thread_id="replan-policy", message="退货政策是什么"))
+    assert result["status"] == "answered"
+    assert result["replan_count"] == 1 and result["plan_revision"] == 2
+    assert result["findings"][0]["source_version"] == "policy-replan-v2"
+
+
+def test_repeated_order_changes_handoff_after_two_replans(db, monkeypatch):
+    from resolveai import agent
+
+    def change_every_time(task_name, _question, _evidence):
+        if task_name == "order_agent":
+            db.get(m.Order, "demo-order-02").version += 1
+        return []
+
+    monkeypatch.setattr(agent, "review_evidence", change_every_time)
+    result = run_chat(db, "cust-01", ChatInput(thread_id="replan-limit", message="查包裹物流", order_id="demo-order-02"))
+    assert result["status"] == "handoff"
+    assert result["replan_count"] == 2 and result["plan_revision"] == 3
+    assert db.get(m.Ticket, result["ticket_id"])

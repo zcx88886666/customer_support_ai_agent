@@ -34,6 +34,7 @@ class AgentState(TypedDict, total=False):
     findings: Annotated[list[dict], operator.add]
     answer: str
     status: str
+    replan_reason: str
     mode: str
     route_candidate: dict
 
@@ -267,9 +268,15 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             if not task or not validate_finding(db, customer_id, task, finding, state["plan_revision"]):
                 continue
             validated.append((task.specialist, finding))
-        # Recheck after read-only branches, so a changed order cannot validate an old answer.
-        if state.get("order_id") and d.owned_order(db, customer_id, state["order_id"]).version != state.get("order_version"):
-            return {"status": "clarify", "answer": "订单状态已变化，请重新查询。"}
+        # Refresh after read-only branches; another transaction may have changed
+        # the order while the specialists were working.
+        if state.get("order_id"):
+            order = d.owned_order(db, customer_id, state["order_id"])
+            db.refresh(order)
+            if order.version != state.get("order_version") or order.policy_bundle_id != state["bundle_id"]:
+                return {"status": "replan", "replan_reason": "order_changed"}
+        elif d.active_policy(db).id != state["bundle_id"]:
+            return {"status": "replan", "replan_reason": "policy_changed"}
         pieces = []
         for role, finding in validated:
             if role == "order":
@@ -354,10 +361,20 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
             result = {"status": "return_requested", "answer": "退货申请已提交，尚未退款。", "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     else:
         from .checkpoint import parent_checkpointer
-        with parent_checkpointer() as checkpointer:
-            graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token)
-            state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
-        result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode}
+        replan_count = 0
+        while True:
+            with parent_checkpointer() as checkpointer:
+                graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token)
+                state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
+            if state.get("status") != "replan":
+                result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode, "replan_count": replan_count}
+                break
+            if replan_count >= 2 or revision >= 4:
+                result = {"status": "handoff", "answer": "业务事实持续变化，已转人工处理。", "route": decision.model_dump(), "plan_revision": revision, "findings": [], "agent_mode": body.agent_mode, "replan_count": replan_count}
+                break
+            replan_count += 1
+            db.expire_all()
+            revision += 1
     if result["status"] == "clarify" and (int(old.get("clarifications", 0)) >= 2 or (decision.intents == ["unknown"] and int(old.get("unknown_clarifications", 0)) >= 1)):
         result = {"status": "handoff", "answer": "已达到澄清轮次上限，请联系人工客服。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     if result["status"] == "handoff":

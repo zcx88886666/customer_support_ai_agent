@@ -13,4 +13,4 @@ scripts/verify_oidc.py                    seven authenticated Keycloak/API/MCP c
 
 The first smoke run after treating unknown messages as clarification had one failure: the greeting `你好` was expected to receive a normal reply. It now has an explicit greeting route. The later smoke run passed all 28 executions. The runner used the deterministic no-key mode; the OIDC check exercised one authenticated model/MCP chat after rebuilding the Docker API.
 
-The graph still has no automatic two-attempt Replan loop for conflicting specialist findings or changed policy evidence. A changed order version during synthesis returns a clarification. This slice covers the clarification budget and task checkpoint scope, not the full v6 Replan contract.
+The bounded order/policy version Replan work was added later the same day; see [its verification report](replan-2026-10-02.md). This report covers the clarification budget and task checkpoint scope.

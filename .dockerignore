@@ -11,3 +11,4 @@ apps/web/.next
 data/generated
 evals/reports
 observability/exports
+observability/prompt_mirror_map.json

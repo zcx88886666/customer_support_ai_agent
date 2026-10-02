@@ -58,6 +58,7 @@ def sync(release_id: str, check_only: bool) -> dict:
                 lf.update_prompt(name=name, version=version, new_labels=["resolveai-release"])
     result = {"release_id": release_id, "mapping": mapping, "drift": drift, "status": "ok" if not drift else "drift"}
     output = ROOT / "observability" / "prompt_mirror_map.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 

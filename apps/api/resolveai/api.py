@@ -34,6 +34,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http
 
 @app.middleware("http")
 async def trace_request(request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
     with tracer().start_as_current_span("http.request") as span:
         span.set_attribute("http.method", request.method)
         for header, attribute in (("x-eval-run-id", "run_id"), ("x-eval-case-id", "case_id")):

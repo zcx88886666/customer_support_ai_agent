@@ -93,7 +93,21 @@ KC_BOOTSTRAP_ADMIN_PASSWORD=<set-outside-repo> AUTH_MODE=oidc docker compose -f 
 
 The local [Prompt catalog](prompts/catalog/) is the only editable Prompt source. [release-v1](prompts/releases/release-v1.json) locks its hashes to the committed catalog; `PromptRegistry` refuses a hash mismatch at startup. `scripts/release_prompts.py` makes a new manifest only after a catalog commit. `scripts/sync_prompts_to_langfuse.py release-v1` mirrors the exact local content to Langfuse when keys are configured; `--check` detects a missing or drifted release label. Cloud Prompt text is never loaded for inference. The mock path does not need Langfuse keys.
 
-Set `OPENROUTER_API_KEY` to enable structured intent extraction using the exact model ID in [the model registry](packages/agent/models-mock-v1.json). For Docker Compose, put `OPENROUTER_API_KEY=...` in a repository-root `.env` file (ignored by Git) with mode `600` and start with `docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api`. Do not paste the key into chat or command arguments. The deterministic mock remains the no-key path. One [live structured-intent request](docs/implementation/openrouter-integration-2026-10-02.md) passed on GPT-4o-mini; broader model quality and cost have not been measured. Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and optionally `LANGFUSE_BASE_URL` for optional Agent span export and score submission. Local OTLP export uses `OTEL_EXPORTER_OTLP_ENDPOINT`; Collector configuration removes named sensitive attributes before Jaeger. To reconcile a run after Cloud ingestion, use `scripts/export_langfuse_run.py <run_id>`. No Cloud account, project, keys, dashboard, or quota observations were available during this implementation.
+Set `OPENROUTER_API_KEY` to enable structured intent extraction using the exact model ID in [the model registry](packages/agent/models-mock-v1.json). For Docker Compose, put `OPENROUTER_API_KEY=...` in a repository-root `.env` file (ignored by Git) with mode `600` and start with `docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api`. Do not paste the key into chat or command arguments. The deterministic mock remains the no-key path. One [live structured-intent request](docs/implementation/openrouter-integration-2026-10-02.md) passed on GPT-4o-mini; broader model quality and cost benchmarks remain open.
+
+### Langfuse Cloud
+
+Add `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL=https://us.cloud.langfuse.com` to the same local `.env` for the configured US project. The project keys identify the project; no project name is needed in the application. Keep the existing OpenRouter key. Then run:
+
+```bash
+docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api worker
+docker compose --env-file .env -f infra/compose/compose.yaml exec -T api python scripts/sync_prompts_to_langfuse.py release-v1
+docker compose --env-file .env -f infra/compose/compose.yaml exec -T api python scripts/sync_prompts_to_langfuse.py release-v1 --check
+```
+
+Open the project in Langfuse: **Prompts** contains six mirrored templates and **Tracing** contains subsequent chat traces. Generations show the configured model, provider-reported token usage/cost, and the mirrored prompt version. Inference still reads the hash-verified local catalog. Rerun sync when publishing a new local prompt release. The Compose `observability` volume preserves the version mapping across API container recreation; removing that volume requires another sync.
+
+Health probes are excluded from Cloud export. Cloud masking removes named sensitive attributes and prompt/completion content while retaining numeric usage counts. Local OTLP export uses `OTEL_EXPORTER_OTLP_ENDPOINT`; the Collector separately removes named sensitive attributes before Jaeger. A [live integration check](docs/implementation/langfuse-integration-2026-10-02.md) verified both exporters, a masking canary, prompt links, generation usage/cost, and score ingestion. Raw chat text is not included in the generation spans. To reconcile an evaluation run after Cloud ingestion, use `scripts/export_langfuse_run.py <run_id>`; full evaluation reconciliation, custom dashboards, and quota calibration remain open.
 
 ## Security and backups
 

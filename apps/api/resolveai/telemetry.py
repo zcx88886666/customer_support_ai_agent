@@ -16,6 +16,33 @@ _configured = False
 _langfuse = None
 
 
+def should_export_span(span):
+    from langfuse.span_filter import is_default_export_span
+
+    attributes = span.attributes or {}
+    if attributes.get("http.route") == "/health" or attributes.get("url.path") == "/health" or attributes.get("code.function.name") == "resolveai.api.health":
+        return False
+    scope = span.instrumentation_scope.name if span.instrumentation_scope else ""
+    return is_default_export_span(span) or scope in ("resolveai.agent", "fastapi")
+
+
+def mask_cloud_spans(*, params):
+    from langfuse.types import MaskOtelSpansResult, OtelSpanPatch
+
+    patches = {}
+    for identifier, span in params.spans.items():
+        sensitive = []
+        for key, value in span.attributes.items():
+            # Counts are useful for cost tracking; authentication tokens are private.
+            if key in ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens") and isinstance(value, int):
+                continue
+            if any(part in key.lower() for part in ("authorization", "token", "api_key", "secret", "address", "payment", "customer_name", "gen_ai.prompt", "gen_ai.completion", "gen_ai.input.messages", "gen_ai.output.messages", "langfuse.trace.input", "langfuse.trace.output", "langfuse.observation.input", "langfuse.observation.output")):
+                sensitive.append(key)
+        if sensitive:
+            patches[identifier] = OtelSpanPatch(delete_attributes=tuple(sensitive), set_attributes={"masking.applied": True})
+    return MaskOtelSpansResult(span_patches=patches) if patches else None
+
+
 def current_trace_id() -> str | None:
     context = trace.get_current_span().get_span_context()
     return f"{context.trace_id:032x}" if context.is_valid else None
@@ -34,22 +61,7 @@ def configure_telemetry():
             provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint.rstrip("/") + "/v1/traces")))
         if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
             from langfuse import Langfuse
-            from langfuse.span_filter import is_default_export_span
-            from langfuse.types import MaskOtelSpansResult, OtelSpanPatch
-
-            def should_export(span):
-                scope = span.instrumentation_scope.name if span.instrumentation_scope else ""
-                return is_default_export_span(span) or scope == "resolveai.agent"
-
-            def redact(*, params):
-                patches = {}
-                for identifier, span in params.spans.items():
-                    sensitive = tuple(key for key in span.attributes if any(part in key.lower() for part in ("authorization", "token", "address", "payment", "customer_name", "gen_ai.prompt", "gen_ai.completion")))
-                    if sensitive:
-                        patches[identifier] = OtelSpanPatch(delete_attributes=sensitive, set_attributes={"masking.applied": True})
-                return MaskOtelSpansResult(span_patches=patches) if patches else None
-
-            _langfuse = Langfuse(public_key=os.environ["LANGFUSE_PUBLIC_KEY"], secret_key=os.environ["LANGFUSE_SECRET_KEY"], base_url=os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"), sample_rate=float(os.getenv("LANGFUSE_SAMPLE_RATE", "1")), tracer_provider=provider, should_export_span=should_export, mask_otel_spans=redact)
+            _langfuse = Langfuse(public_key=os.environ["LANGFUSE_PUBLIC_KEY"], secret_key=os.environ["LANGFUSE_SECRET_KEY"], base_url=os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"), sample_rate=float(os.getenv("LANGFUSE_SAMPLE_RATE", "1")), tracer_provider=provider, should_export_span=should_export_span, mask_otel_spans=mask_cloud_spans)
         if provider is not current:
             trace.set_tracer_provider(provider)
         _configured = True

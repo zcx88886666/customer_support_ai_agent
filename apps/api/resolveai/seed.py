@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -20,8 +19,8 @@ def seed_demo(db, clock: datetime = DEMO_CLOCK):
         db.add(m.Customer(id=customer_id, display_name=f"Synthetic {customer_id}"))
         db.add(m.CustomerProfile(customer_id=customer_id))
     db.flush()
-    digest = hashlib.sha256(b"resolveai-demo-policy-v1").hexdigest()
-    db.add(m.PolicyBundle(id="policy-demo-v1", status="active", effective_from=clock - timedelta(days=365), window_days=7, content_hash=digest, active=True))
+    bundle = m.PolicyBundle(id="policy-demo-v1", status="active", effective_from=clock - timedelta(days=365), window_days=7, content_hash="pending", active=True)
+    db.add(bundle)
     db.flush()
     clauses = [
         ("window", "七日无理由退货申请期", "已签收合格实物商品，自签收次日起七个自然日内可申请退货。"),
@@ -29,8 +28,13 @@ def seed_demo(db, clock: datetime = DEMO_CLOCK):
         ("inspection", "仓库质检", "实际收到退货后核对数量与商品状态；异常转人工。"),
         ("refund", "模拟退款", "仓库质检通过并经主管批准后，按实付分摊额模拟原路退款。"),
     ]
+    clause_rows = []
     for slug, title, body in clauses:
-        db.add(m.PolicyClause(id=f"clause-{slug}", bundle_id="policy-demo-v1", title=title, body=body))
+        clause = m.PolicyClause(id=f"clause-{slug}", bundle_id="policy-demo-v1", title=title, body=body)
+        clause_rows.append(clause)
+        db.add(clause)
+    from .policy import fingerprint
+    bundle.content_hash = fingerprint(bundle, clause_rows)
     for index in range(1, 26):
         customer_id = "cust-02" if index % 5 == 0 else "cust-01"
         order_id = f"demo-order-{index:02d}"

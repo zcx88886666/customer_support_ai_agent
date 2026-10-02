@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from datetime import datetime, timezone
 from sqlalchemy import func, select
 
 from resolveai.api import app
 from resolveai.db import get_db
 from resolveai import models as m, worker
+from resolveai.policy import activate, create_draft, index_and_verify
 
 
 def test_api_object_authorization(session_factory):
@@ -85,5 +87,29 @@ def test_http_return_to_approved_single_refund(session_factory, monkeypatch):
             ledger = db.scalar(select(m.RefundLedger))
             assert ledger.amount_cents == db.get(m.OrderItem, "demo-item-01").paid_cents
             assert {event.action for event in db.scalars(select(m.AuditEvent)).all()} >= {"create_return", "record_receipt", "record_inspection", "create_proposal", "approved", "issue_refund"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_policy_rollback_requires_supervisor(session_factory):
+    with session_factory.begin() as db:
+        bundle = create_draft(db, "support-1", "policy-api-v2", 7, [{"id": "policy-api-v2:window", "title": "退货", "body": "合格商品签收次日起可申请退货。"}], datetime.now(timezone.utc))
+        index_and_verify(db, "supervisor-1", bundle.id)
+        activate(db, "supervisor-1", bundle.id)
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            path = "/policies/policy-demo-v1/rollback"
+            assert client.post(path, headers={"x-mock-actor": "cust-01", "x-mock-role": "customer"}).status_code == 403
+            response = client.post(path, headers={"x-mock-actor": "supervisor-1", "x-mock-role": "supervisor"})
+            assert response.status_code == 200 and response.json()["status"] == "active"
+        with session_factory() as db:
+            assert db.get(m.PolicyBundle, "policy-demo-v1").active
+            assert not db.get(m.PolicyBundle, "policy-api-v2").active
     finally:
         app.dependency_overrides.clear()

@@ -185,6 +185,15 @@ def activate_policy(bundle_id: str, actor: Principal = Depends(principal), db: S
     return {"id": bundle.id, "status": bundle.status, "content_hash": bundle.content_hash}
 
 
+@app.post("/policies/{bundle_id}/rollback")
+def rollback_policy(bundle_id: str, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    actor.require("supervisor")
+    from .policy import rollback
+    with db.begin():
+        bundle = rollback(db, actor.subject, bundle_id)
+    return {"id": bundle.id, "status": bundle.status, "content_hash": bundle.content_hash}
+
+
 @app.get("/profile/preferences")
 def preferences(actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("customer")

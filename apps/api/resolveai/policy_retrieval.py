@@ -43,7 +43,7 @@ def index_bundle(db: Session, bundle_id: str) -> int:
     if db.bind.dialect.name != "postgresql":
         return 0
     bundle = db.get(m.PolicyBundle, bundle_id)
-    if bundle is None or bundle.status not in {"active", "verified", "indexed"}:
+    if bundle is None or bundle.status not in {"active", "verified", "indexed", "superseded"}:
         return 0
     clauses = db.scalars(select(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle_id)).all()
     for clause in clauses:
@@ -60,6 +60,17 @@ def index_bundle(db: Session, bundle_id: str) -> int:
     return len(clauses)
 
 
+def index_current(db: Session, bundle_id: str) -> bool:
+    if db.bind.dialect.name != "postgresql":
+        return True
+    bundle = db.get(m.PolicyBundle, bundle_id)
+    if not bundle:
+        return False
+    total = db.scalar(select(func.count()).select_from(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle_id))
+    indexed = db.scalar(sql_text("SELECT count(*) FROM policy_clause_search WHERE bundle_id=:bundle_id AND content_hash=:digest AND index_version=:version"), {"bundle_id": bundle_id, "digest": bundle.content_hash, "version": INDEX_VERSION})
+    return bool(total and indexed == total)
+
+
 def postgres_hits(db: Session, bundle_id: str, query: str, limit: int) -> list[m.PolicyClause]:
     bundle = db.get(m.PolicyBundle, bundle_id)
     if not bundle:
@@ -67,9 +78,7 @@ def postgres_hits(db: Session, bundle_id: str, query: str, limit: int) -> list[m
     query_terms = terms(query)
     if not query_terms:
         return []
-    indexed = db.scalar(sql_text("SELECT count(*) FROM policy_clause_search WHERE bundle_id=:bundle_id AND content_hash=:digest AND index_version=:version"), {"bundle_id": bundle_id, "digest": bundle.content_hash, "version": INDEX_VERSION})
-    total = db.scalar(select(func.count()).select_from(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle_id))
-    if indexed != total:
+    if not index_current(db, bundle_id):
         return []
     refs = db.execute(sql_text("""WITH lexical_candidates AS (
             SELECT clause_id, ts_rank_cd(search_terms, to_tsquery('simple', :query_terms)) AS score

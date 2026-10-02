@@ -64,10 +64,37 @@ def activate(db: Session, actor: str, bundle_id: str) -> m.PolicyBundle:
     clauses = db.scalars(select(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle_id)).all()
     if fingerprint(bundle, clauses) != bundle.content_hash:
         raise d.DomainError("policy_hash_mismatch", "Policy changed after verification")
+    from .policy_retrieval import index_current
+    if not index_current(db, bundle_id):
+        raise d.DomainError("policy_index_unavailable", "Verified policy index unavailable")
     for old in db.scalars(select(m.PolicyBundle).where(m.PolicyBundle.active.is_(True)).with_for_update()).all():
         old.active = False
         old.status = "superseded"
+    db.flush()
     bundle.active = True
     bundle.status = "active"
     d.audit(db, actor, "activate_policy", "policy_bundle", bundle_id, bundle=bundle_id, details={"content_hash": bundle.content_hash})
+    return bundle
+
+
+def rollback(db: Session, actor: str, bundle_id: str) -> m.PolicyBundle:
+    """Reactivate a verified historical bundle without changing its policy text."""
+    bundle = db.get(m.PolicyBundle, bundle_id)
+    if not bundle or bundle.status != "superseded" or bundle.active:
+        raise d.DomainError("policy_not_superseded", "Superseded policy required")
+    clauses = db.scalars(select(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle_id)).all()
+    if fingerprint(bundle, clauses) != bundle.content_hash:
+        raise d.DomainError("policy_hash_mismatch", "Historical policy content changed")
+    from .policy_retrieval import index_bundle, index_current
+    if db.bind.dialect.name == "postgresql" and (index_bundle(db, bundle_id) != len(clauses) or not index_current(db, bundle_id)):
+        raise d.DomainError("policy_index_unavailable", "Historical policy index unavailable")
+    previous = []
+    for old in db.scalars(select(m.PolicyBundle).where(m.PolicyBundle.active.is_(True)).with_for_update()).all():
+        previous.append(old.id)
+        old.active = False
+        old.status = "superseded"
+    db.flush()
+    bundle.active = True
+    bundle.status = "active"
+    d.audit(db, actor, "rollback_policy", "policy_bundle", bundle_id, bundle=bundle_id, details={"content_hash": bundle.content_hash, "previous_active": previous})
     return bundle

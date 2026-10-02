@@ -24,6 +24,8 @@ docker compose -f infra/compose/compose.yaml down
 
 The [Docker integration report](docs/implementation/docker-compose-2026-09-30.md) records the actual PostgreSQL 17, chat, refund, restart, and Jaeger checks. A separate [PostgreSQL 16 report](docs/implementation/postgres-integration-2026-09-30.md) covers the 100,000-order import. Set `DATABASE_URL` to a PostgreSQL URL to run API and worker against another local PostgreSQL installation.
 
+An isolated million-order PostgreSQL import and 20/50/100-user no-key k6 read/chat load were measured without changing the live demo database. The [scale report](docs/implementation/million-order-load-2026-10-02.md) has the commands, actual P95s, error rates, resource snapshots, and limits; the load script is [million_orders.js](evals/load/million_orders.js).
+
 PostgreSQL startup also builds the active policy's version-scoped full-text and pgvector search rows. Verify the index, bundle isolation, and stale-index rejection with `docker compose --env-file .env -f infra/compose/compose.yaml exec -T api python scripts/verify_policy_search.py`. This is a local character-gram vector baseline; the [verification report](docs/implementation/policy-search-2026-10-02.md) records its limits.
 
 A supervisor can restore a superseded policy through `POST /policies/{bundle_id}/rollback`. The service checks its content hash and search index before switching the active bundle and records an audit event. The [rollback report](docs/implementation/policy-rollback-2026-10-02.md) covers the migrated demo bundle and measured checks.

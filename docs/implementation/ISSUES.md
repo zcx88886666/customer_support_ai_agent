@@ -34,6 +34,7 @@ Updated 2026-10-02. This log records encountered failures, fixes, and open integ
 | Unknown intent and completed-thread revisions broke the clarification contract | Added an unknown-intent clarification cap, 24-hour pending expiry, task-scoped revisions/checkpoints, and old-slot invalidation on order changes. One smoke greeting failed after the first change; an explicit greeting route restored the expected reply. The next smoke run passed 28/28. See [clarification report](clarification-2026-10-02.md). |
 | An order or active policy could change while specialists read it | The coordinator now refreshes and compares authoritative versions before answering, retries from fresh facts at most twice, and hands off after repeated changes. Isolated mid-read mutation tests passed; see [Replan report](replan-2026-10-02.md). |
 | Historical policy rollback could not verify the demo bundle | The original seed used a fixed marker hash, and an active-policy switch could violate the unique index if updates flushed in the wrong order. A data migration repaired only the exact synthetic fixture; ordered flushes, index validation, a supervisor-only rollback endpoint, and audit were added. SQLite migration, Python tests, and Docker PostgreSQL rollback passed; see [rollback report](policy-rollback-2026-10-02.md). |
+| Million-order import and API capacity were unmeasured | Imported the validated million-order CSV world into a separate Docker PostgreSQL 17 database in 122.533 seconds, verified six zero-violation checks, and ran 20/50/100-user no-key k6 profiles. At 100 users there were zero HTTP errors but overall P95 reached 2.10 seconds and chat P95 4.99 seconds. See [load report](million-order-load-2026-10-02.md). |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
@@ -45,13 +46,13 @@ Updated 2026-10-02. This log records encountered failures, fixes, and open integ
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |
 | Policy retrieval | PostgreSQL 17 has version-scoped GIN full-text and HNSW pgvector indexes with deterministic local gram vectors; the four-clause demo, temporary draft, stale-index checks, and historical rollback passed. Semantic embeddings and larger corpus recall benchmarks remain open. |
 | Memory A/B | Confirmed preferences, consent, correction, deletion, and ownership are tested. PostgresStore and Mem0 OSS A/B with 40 multi-session stories and live route selection are not complete. Memory does not influence transactional facts. |
-| Operational scale | CSV generation/validation reached 100k and 1m counts, and the 100k profile imported into PostgreSQL 16 in 6.508 seconds with zero checked database violations. Million-order PostgreSQL import, k6 mixed API load, latency/resource benchmarks, Redis/Celery queues, live deadline scheduling, and an actual offline copy remain unmeasured. A local Git bundle restore was verified. |
+| Operational scale | CSV generation/validation reached 100k and 1m counts. The million-order world imported into isolated PostgreSQL 17 in 122.533 seconds; six database checks stayed at zero violations after 20/50/100-user k6 read/chat tests. At 100 users overall P95 was 2.10 seconds and chat P95 4.99 seconds; see [load report](million-order-load-2026-10-02.md). Sustained and write-flow load, Redis/Celery queues, live deadline scheduling, and an actual offline copy remain open. A local Git bundle restore was verified. |
 | Frontend browser behavior | Next.js compile and TypeScript build passed. Playwright verified customer/support/warehouse/supervisor login views and customer order list. Full browser return-to-refund journeys remain unverified. |
 
 ## Last local checks
 
 ```text
-.venv/bin/pytest -q                 32 passed (including 1,000 refund properties, signed OIDC/MCP, model evidence source validation, multi-turn slots, deadline alerts, cross-role HTTP refund, checkpoint turn isolation, strict schema validation, and telemetry masking/filtering/usage)
+.venv/bin/pytest -q                 41 passed (including policy rollback, bounded Replan, clarification expiry, 1,000 refund properties, signed OIDC/MCP, and cross-role HTTP refund)
 .venv/bin/python evals/runners/run_smoke.py  25 unique cases, 28 mock executions passed
 apps/web: npm run build             compiled, TypeScript passed
 data/generator/validate.py realistic-100k-v3  100,000 orders, 0 violations, hashes match
@@ -65,4 +66,6 @@ Docker Compose PostgreSQL 17.11/pgvector 0.8.6  25 orders, one approved refund l
 Docker chat and restart replay               HTTP 200; two fresh findings on each turn; cross-customer HTTP 404
 Docker OTel to Jaeger                         seven-span chat trace under resolveai-api
 OpenRouter Docker intent call                 one synthetic GPT-4o-mini request answered; schema fix verified
+Docker PostgreSQL 17 million-order import     122.533 seconds; 1,000,025 total orders; six violation counts zero
+k6 20/50/100-user no-key scale profiles       1,203/2,471/3,129 requests; zero HTTP errors; overall P95 359/635/2,101 ms
 ```

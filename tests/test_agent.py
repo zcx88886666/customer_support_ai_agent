@@ -53,7 +53,8 @@ def test_checkpoint_does_not_replay_previous_turn_findings(db, monkeypatch):
     second = run_chat(db, "cust-01", body)
     assert len(first["findings"]) == len(second["findings"]) == 2
     assert {finding["plan_revision"] for finding in first["findings"]} == {1}
-    assert {finding["plan_revision"] for finding in second["findings"]} == {2}
+    assert {finding["plan_revision"] for finding in second["findings"]} == {1}
+    assert db.get(m.ThreadState, "checkpoint-turns").state["plan_revision"] == 1
 
 
 def test_agent_cannot_refund_or_submit_without_confirmation(db):
@@ -101,3 +102,54 @@ def test_return_slots_continue_across_turns_but_confirmation_is_current(db):
     third = run_chat(db, "cust-01", ChatInput(thread_id="return-thread", message="我确认提交", quantity=1, reason="changed mind", confirmed=True, idempotency_key="multi-turn-return"))
     assert third["status"] == "return_requested"
     assert third["plan_revision"] == 3
+
+
+def test_unknown_and_repeated_missing_slots_handoff(db):
+    assert run_chat(db, "cust-01", ChatInput(thread_id="greeting-thread", message="你好"))["status"] == "answered"
+    first = run_chat(db, "cust-01", ChatInput(thread_id="unknown-thread", message="嗯嗯"))
+    assert first["status"] == "clarify"
+    second = run_chat(db, "cust-01", ChatInput(thread_id="unknown-thread", message="嗯嗯"))
+    assert second["status"] == "handoff"
+    assert second["ticket_id"]
+
+    for _ in range(2):
+        assert run_chat(db, "cust-01", ChatInput(thread_id="missing-slots", message="我要退货", order_id="demo-order-01"))["status"] == "clarify"
+    third = run_chat(db, "cust-01", ChatInput(thread_id="missing-slots", message="我要退货", order_id="demo-order-01"))
+    assert third["status"] == "handoff"
+
+
+def test_expired_return_clarification_drops_unconfirmed_slots(db):
+    first = run_chat(db, "cust-01", ChatInput(thread_id="expired-return", message="我要退货", order_id="demo-order-01", item_id="demo-item-01"))
+    assert first["status"] == "clarify"
+    thread = db.get(m.ThreadState, "expired-return")
+    thread.updated_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    second = run_chat(db, "cust-01", ChatInput(thread_id="expired-return", message="我确认提交", quantity=1, reason="changed mind", confirmed=True, idempotency_key="expired-key"))
+    assert second["status"] == "clarify"
+    assert second["plan_revision"] == 1
+    assert thread.state["status"] == "clarify"
+    assert thread.state.get("item_id") is None
+
+
+def test_order_followup_uses_pending_route_and_order_change_clears_item(db):
+    first = run_chat(db, "cust-01", ChatInput(thread_id="tracking-followup", message="物流在哪里"))
+    assert first["status"] == "clarify"
+    second = run_chat(db, "cust-01", ChatInput(thread_id="tracking-followup", message="这个", order_id="demo-order-02"))
+    assert second["status"] == "answered"
+    assert second["route"]["intents"] == ["shipment_tracking"]
+
+    first_return = run_chat(db, "cust-01", ChatInput(thread_id="changed-order", message="我要退货", order_id="demo-order-01", item_id="demo-item-01"))
+    assert first_return["status"] == "clarify"
+    changed = run_chat(db, "cust-01", ChatInput(thread_id="changed-order", message="这件", order_id="demo-order-02", quantity=1, reason="changed mind", confirmed=True, idempotency_key="changed-order-key"))
+    assert changed["status"] == "clarify"
+    assert "商品项编号" in changed["answer"]
+
+
+def test_plan_revision_limit_creates_handoff_ticket(db):
+    first = run_chat(db, "cust-01", ChatInput(thread_id="revision-cap", message="我要退货", order_id="demo-order-01"))
+    assert first["status"] == "clarify"
+    thread = db.get(m.ThreadState, "revision-cap")
+    thread.state = {**thread.state, "plan_revision": 4}
+    result = run_chat(db, "cust-01", ChatInput(thread_id="revision-cap", message="这件"))
+    assert result["status"] == "handoff"
+    assert result["plan_revision"] == 4
+    assert db.get(m.Ticket, result["ticket_id"]).topic == "clarification limit"

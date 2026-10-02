@@ -45,6 +45,8 @@ class SpecialistState(TypedDict, total=False):
 
 def classify(text: str) -> RouteDecision:
     lower = text.lower()
+    if lower.strip(" ！!。.，,？?") in {"你好", "您好", "hello", "hi"}:
+        return RouteDecision(route="knowledge", intents=[])
     if any(term in lower for term in ("人工", "真人客服", "human agent")):
         return RouteDecision(route="human_handoff", intents=["human_request"])
     # A question about an undelivered parcel is an inquiry. Model intent labels
@@ -309,57 +311,75 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
     thread = db.get(m.ThreadState, body.thread_id)
     if thread and thread.customer_id != customer_id:
         raise d.DomainError("thread_not_found", "Thread unavailable", 404)
-    old = thread.state if thread else {}
-    revision = min(int(old.get("plan_revision", 0)) + 1, 4)
-    if int(old.get("plan_revision", 0)) >= 4:
-        return {"status": "handoff", "answer": "已达到自动处理轮次上限，请联系人工客服。", "plan_revision": 4}
-    order_id = body.order_id or old.get("order_id")
+    now = datetime.now(timezone.utc)
+    previous = thread.state if thread else {}
+    pending_expired = bool(thread and previous.get("status") == "clarify" and thread.updated_at and now - d.aware(thread.updated_at) > timedelta(hours=24))
     decision = classify(body.message)
+    continuing = previous.get("status") == "clarify" and not pending_expired
+    if continuing and decision.route == "clarify":
+        if previous.get("pending_route"):
+            pending_route = RouteDecision.model_validate(previous["pending_route"])
+            if pending_route.intents != ["unknown"]:
+                decision = pending_route
+        elif previous.get("pending_intent") == "return_request":
+            decision = RouteDecision(route="after_sales", intents=["return_request"])
+    elif continuing and previous.get("pending_intent") == "return_request" and decision.route != "human_handoff" and "return_request" not in decision.intents:
+        continuing = False
+    old = previous if continuing else ({"order_id": previous.get("order_id")} if not pending_expired else {})
+    task_id = old.get("task_id") or uuid4().hex
+    revision = int(old.get("plan_revision", 0)) + 1 if continuing else 1
+    over_revision_limit = revision > 4
+    revision = min(revision, 4)
+    order_id = body.order_id or old.get("order_id")
     if decision.route == "human_handoff":
         order_id = old.get("order_id") if not body.order_id else None
     elif order_id:
         d.owned_order(db, customer_id, order_id)
-    if old.get("pending_intent") == "return_request" and decision.route == "clarify":
-        decision = RouteDecision(route="after_sales", intents=["return_request"])
-    item_id = body.item_id or old.get("item_id")
-    quantity = body.quantity or old.get("quantity")
-    reason = body.reason or old.get("reason")
-    if decision.route == "human_handoff":
+    order_changed = bool(continuing and body.order_id and body.order_id != old.get("order_id"))
+    item_id = body.item_id or (None if order_changed else old.get("item_id"))
+    quantity = body.quantity or (None if order_changed else old.get("quantity"))
+    reason = body.reason or (None if order_changed else old.get("reason"))
+    if over_revision_limit:
+        result = {"status": "handoff", "answer": "已达到自动处理轮次上限，请联系人工客服。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+    elif decision.route == "human_handoff":
         result = {"status": "handoff", "answer": "已转人工处理。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+    elif decision.intents == ["unknown"]:
+        result = {"status": "clarify", "answer": "请说明要查询的订单、物流或退货问题。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif "return_request" in decision.intents:
-        if int(old.get("clarifications", 0)) >= 3:
-            result = {"status": "handoff", "answer": "已达到澄清轮次上限，请联系人工客服。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+        missing = next((pair for pair in ((not order_id, "请提供订单编号。"), (not item_id, "请提供要退的商品项编号。"), (not quantity, "请提供退货数量。"), (not reason, "请提供退货原因。"), (not body.confirmed, "请明确确认订单、商品、数量、原因并提交退货申请。"), (not body.idempotency_key, "请使用提交按钮生成幂等请求编号。")) if pair[0]), (False, ""))
+        if missing[0]:
+            result = {"status": "clarify", "answer": missing[1], "route": decision.model_dump(), "plan_revision": revision, "findings": []}
         else:
-            missing = next((pair for pair in ((not order_id, "请提供订单编号。"), (not item_id, "请提供要退的商品项编号。"), (not quantity, "请提供退货数量。"), (not reason, "请提供退货原因。"), (not body.confirmed, "请明确确认订单、商品、数量、原因并提交退货申请。")) if pair[0]), (False, ""))
-            if missing[0]:
-                result = {"status": "clarify", "answer": missing[1], "route": decision.model_dump(), "plan_revision": revision, "findings": []}
-            elif not body.idempotency_key:
-                result = {"status": "clarify", "answer": "请使用提交按钮生成幂等请求编号。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
-            else:
-                request = d.create_return(db, customer_id, order_id, item_id, quantity, reason, True, body.idempotency_key, datetime.now(timezone.utc), revision)
-                result = {"status": "return_requested", "answer": "退货申请已提交，尚未退款。", "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+            request = d.create_return(db, customer_id, order_id, item_id, quantity, reason, True, body.idempotency_key, now, revision)
+            result = {"status": "return_requested", "answer": "退货申请已提交，尚未退款。", "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     else:
         from .checkpoint import parent_checkpointer
         with parent_checkpointer() as checkpointer:
             graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token)
-            state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:r{revision}"}})
+            state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
         result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode}
+    if result["status"] == "clarify" and (int(old.get("clarifications", 0)) >= 2 or (decision.intents == ["unknown"] and int(old.get("unknown_clarifications", 0)) >= 1)):
+        result = {"status": "handoff", "answer": "已达到澄清轮次上限，请联系人工客服。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     if result["status"] == "handoff":
         ticket = db.get(m.Ticket, old.get("ticket_id")) if old.get("ticket_id") else None
         if ticket is None:
-            ticket = m.Ticket(customer_id=customer_id, order_id=order_id, topic="customer requested support" if decision.route == "human_handoff" else "complaint")
+            topic = "customer requested support" if decision.route == "human_handoff" else "clarification limit" if "上限" in result["answer"] else "complaint"
+            ticket = m.Ticket(customer_id=customer_id, order_id=order_id, topic=topic)
             db.add(ticket)
             db.flush()
             d.audit(db, customer_id, "create_ticket", "ticket", ticket.id)
         result["ticket_id"] = ticket.id
-    safe_state = {"order_id": order_id, "plan_revision": revision, "status": result["status"], "clarifications": int(old.get("clarifications", 0)) + 1 if result["status"] == "clarify" else 0}
-    if result["status"] == "clarify" and "return_request" in decision.intents:
-        safe_state.update({"pending_intent": "return_request", "item_id": item_id, "quantity": quantity, "reason": reason})
+    safe_state = {"order_id": order_id, "task_id": task_id, "plan_revision": revision, "status": result["status"], "clarifications": int(old.get("clarifications", 0)) + 1 if result["status"] == "clarify" else 0}
+    if result["status"] == "clarify":
+        safe_state["pending_route"] = decision.model_dump()
+        safe_state["unknown_clarifications"] = int(old.get("unknown_clarifications", 0)) + 1 if decision.intents == ["unknown"] else 0
+        if "return_request" in decision.intents:
+            safe_state.update({"pending_intent": "return_request", "item_id": item_id, "quantity": quantity, "reason": reason})
     if result.get("ticket_id"):
         safe_state["ticket_id"] = result["ticket_id"]
     if thread:
         thread.state = safe_state
-        thread.updated_at = datetime.now(timezone.utc)
+        thread.updated_at = now
     else:
         db.add(m.ThreadState(id=body.thread_id, customer_id=customer_id, state=safe_state))
     result["trace_id"] = current_trace_id()

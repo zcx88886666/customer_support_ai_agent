@@ -31,6 +31,7 @@ Updated 2026-10-02. This log records encountered failures, fixes, and open integ
 | The new Docker build could not install the local project with `uv sync --offline` | The dependency layer lacked `setuptools` for the local project's isolated build. Kept dependency layers ahead of code, but allowed network access for the final `uv sync`; the image then built and API started. |
 | Restricted sandbox stalled the full Python suite at `TestClient` | Even an empty FastAPI app stalled at `TestClient.__enter__` there. The same minimal check returned HTTP 200 outside the restricted sandbox; the unchanged full suite then passed, 32 tests in 3.40 seconds. |
 | PostgreSQL policy retrieval had no version-scoped search index | Added a clause table with GIN full-text and HNSW pgvector indexes, local gram vectors, RRF ranking, startup refresh, and fail-closed stale-index behavior. The Docker verification script passed live draft indexing, bundle scope, and stale-index rejection. See [policy search report](policy-search-2026-10-02.md). |
+| Unknown intent and completed-thread revisions broke the clarification contract | Added an unknown-intent clarification cap, 24-hour pending expiry, task-scoped revisions/checkpoints, and old-slot invalidation on order changes. One smoke greeting failed after the first change; an explicit greeting route restored the expected reply. The next smoke run passed 28/28. See [clarification report](clarification-2026-10-02.md). |
 
 ## Open gates needing external runtime, credentials, or further implementation
 

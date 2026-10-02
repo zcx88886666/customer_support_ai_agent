@@ -27,6 +27,7 @@ services:
       OIDC_AUDIENCE: resolveai-api
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}
       PROMPT_RELEASE: release-v1
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: resolveai-api

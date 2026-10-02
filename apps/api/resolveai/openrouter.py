@@ -22,6 +22,22 @@ def configured() -> bool:
     return bool(os.getenv("OPENROUTER_API_KEY"))
 
 
+def strict_json_schema(model: type[BaseModel]) -> dict:
+    """Adapt Pydantic's schema to the strict structured-output subset."""
+    def normalize(value):
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: normalize(item) for key, item in value.items() if key != "default"}
+        if result.get("type") == "object" and "properties" in result:
+            result["required"] = list(result["properties"])
+            result["additionalProperties"] = False
+        return result
+
+    return normalize(model.model_json_schema())
+
+
 def call_structured(task: str, variables: dict[str, str], schema: type[T], release_id: str = "release-v1") -> T:
     key = os.getenv("OPENROUTER_API_KEY")
     if not key:
@@ -29,7 +45,7 @@ def call_structured(task: str, variables: dict[str, str], schema: type[T], relea
     config = ModelRegistry().get(task)
     prompt = PromptRegistry(release_id).get(config.prompt_name)
     content = prompt["template"].format(**variables)
-    body = {"model": config.model, "messages": [{"role": "user", "content": content}], "temperature": config.temperature, "max_tokens": config.max_tokens, "provider": {"order": list(config.provider_order), "require_parameters": True}, "response_format": {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": schema.model_json_schema()}}}
+    body = {"model": config.model, "messages": [{"role": "user", "content": content}], "temperature": config.temperature, "max_tokens": config.max_tokens, "provider": {"order": list(config.provider_order), "require_parameters": True}, "response_format": {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": strict_json_schema(schema)}}}
     for attempt in range(2):
         try:
             with httpx.Client(timeout=config.timeout_seconds) as client:

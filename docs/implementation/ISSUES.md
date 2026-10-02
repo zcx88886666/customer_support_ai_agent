@@ -1,6 +1,6 @@
 # Implementation and verification log
 
-Updated 2026-09-30. This log records encountered failures, fixes, and open integration gates. It is not a claim that the v6 plan is fully finished.
+Updated 2026-10-02. This log records encountered failures, fixes, and open integration gates. It is not a claim that the v6 plan is fully finished.
 
 ## Resolved during implementation
 
@@ -26,6 +26,7 @@ Updated 2026-09-30. This log records encountered failures, fixes, and open integ
 | First Docker chat request timed out | `PostgresSaver.setup()` attempted a concurrent index while the same request held a PostgreSQL transaction. Moved checkpoint setup to API startup; Docker chat then returned HTTP 200 in under a second. |
 | PostgreSQL checkpoint replay included prior-turn findings | Scoped the graph checkpoint key to customer, thread, and plan revision; a MemorySaver regression test and Docker two-turn replay each returned two findings from the current revision only. |
 | Docker API startup showed an OTel provider warning and metrics 404 exports | Reused an existing SDK provider, set Compose service names, and disabled unused metrics export. Rebuilt API/worker logs showed no recurrence; Jaeger received a seven-span chat trace under `resolveai-api`. |
+| First live OpenRouter chat fell back to handoff | The key passed OpenRouter's `/api/v1/key` check, but the Pydantic schema lacked strict-mode `required` and `additionalProperties: false`. Normalized the schema before sending it; one live GPT-4o-mini synthetic order-status request then returned an answered response. See [OpenRouter report](openrouter-integration-2026-10-02.md). |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
@@ -33,7 +34,7 @@ Updated 2026-09-30. This log records encountered failures, fixes, and open integ
 |---|---|
 | Keycloak/MCP and deeper Docker operations | Docker Compose PostgreSQL 17, PostgresSaver chat, worker execution, API restart, and OTel→Jaeger trace passed. Keycloak sign-in and authenticated MCP calls still require configured users; refund worker concurrency, full container restart recovery, and live deadline delivery remain unverified. The Git bundle still needs copying to a separate offline medium. |
 | Langfuse Cloud | No project name, public/secret keys, or base URL were provided. Local inference and eval do not depend on Cloud. With keys, run mirror sync/drift check, an eval, export reconciliation, masking canary, dashboard setup, and quota calibration. |
-| OpenRouter real-model path | No key or live model budget was provided. The configured structured intent adapter is unmeasured. Run provider/schema trials, fix provider version, then paired locked evaluations. |
+| OpenRouter real-model path | A local ignored key and one live GPT-4o-mini structured-intent call now work in Docker. Provider/schema regression trials, cost measurements, model comparison, and paired locked evaluations remain open. |
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |
 | Policy retrieval | pgvector is installed and its distance operator works in PostgreSQL 16. The no-key retrieval still uses deterministic lexical/character-gram RRF. PostgreSQL full-text + pgvector policy indexes, embeddings, index versioning, and historical policy publication/rollback regression remain open. |
 | Memory A/B | Confirmed preferences, consent, correction, deletion, and ownership are tested. PostgresStore and Mem0 OSS A/B with 40 multi-session stories and live route selection are not complete. Memory does not influence transactional facts. |
@@ -43,7 +44,7 @@ Updated 2026-09-30. This log records encountered failures, fixes, and open integ
 ## Last local checks
 
 ```text
-.venv/bin/pytest -q                 23 passed (including 1,000 refund properties, OIDC, multi-turn slots, deadline alerts, cross-role HTTP refund, and checkpoint turn isolation)
+.venv/bin/pytest -q                 24 passed (including 1,000 refund properties, OIDC, multi-turn slots, deadline alerts, cross-role HTTP refund, checkpoint turn isolation, and strict schema validation)
 .venv/bin/python evals/runners/run_smoke.py  25 unique cases, 28 mock executions passed
 apps/web: npm run build             compiled, TypeScript passed
 data/generator/validate.py realistic-100k-v3  100,000 orders, 0 violations, hashes match
@@ -56,4 +57,5 @@ scripts/verify_postgres.py --expected-orders 100025  passed, six violation count
 Docker Compose PostgreSQL 17.11/pgvector 0.8.6  25 orders, one approved refund ledger, six violation counts zero
 Docker chat and restart replay               HTTP 200; two fresh findings on each turn; cross-customer HTTP 404
 Docker OTel to Jaeger                         seven-span chat trace under resolveai-api
+OpenRouter Docker intent call                 one synthetic GPT-4o-mini request answered; schema fix verified
 ```

@@ -48,6 +48,8 @@ def index_and_verify(db: Session, actor: str, bundle_id: str) -> m.PolicyBundle:
         raise d.DomainError("policy_validation_failed", "Policy hash or required evidence invalid")
     bundle.status = "indexed"
     db.flush()
+    from .policy_retrieval import index_bundle
+    index_bundle(db, bundle.id)
     # Rule boundary behavior is covered by domain tests; only verified local
     # bundles may be activated. This stage checks the indexed content hash.
     bundle.status = "verified"

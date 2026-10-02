@@ -100,3 +100,12 @@ class SpecialistFinding(BaseModel):
     queried_at: datetime
     unresolved: list[str] = Field(default_factory=list)
     tool_calls: int = Field(default=0, le=2)
+    model_reviewed: bool = False
+    reviewed_source_ids: list[str] = Field(default_factory=list)
+
+
+class SpecialistReview(BaseModel):
+    """Untrusted model ranking of already verified, aliased evidence."""
+
+    selected_evidence: list[str]
+    unresolved_conditions: list[str]

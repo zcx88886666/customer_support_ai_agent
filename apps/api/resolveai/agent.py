@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import operator
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, TypedDict
 from uuid import uuid4
@@ -11,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import domain as d, models as m
-from .schemas import ChatInput, DelegationTask, RouteDecision, SpecialistFinding
+from .schemas import ChatInput, DelegationTask, RouteDecision, SpecialistFinding, SpecialistReview
 from .telemetry import tracer, current_trace_id
 from .openrouter import configured as model_configured, call_structured, ModelUnavailable
 from .config import settings
@@ -87,8 +88,28 @@ def safe_scope(text: str) -> str:
     return " ".join(term for term in terms if term.lower() in text.lower())[:160]
 
 
+def review_evidence(task_name: str, question: str, evidence: list[tuple[str, dict]]) -> list[str]:
+    """Let the model rank read-only evidence; reject unknown IDs and keep all facts."""
+    if not model_configured() or not evidence:
+        return []
+    aliases = {f"e{index}": source_id for index, (source_id, _) in enumerate(evidence, 1)}
+    context = {"question": question, "verified_evidence": [{"ref": alias, **facts} for alias, (_, facts) in zip(aliases, evidence)], "instruction": "Select relevant evidence refs only. Unresolved conditions are advisory; do not infer eligibility or money."}
+    try:
+        review = call_structured(task_name, {"question": json.dumps(context, ensure_ascii=False)}, SpecialistReview, settings.prompt_release)
+    except ModelUnavailable:
+        return []
+    if not isinstance(review, SpecialistReview):
+        return []
+    refs = review.selected_evidence
+    if not refs or len(refs) != len(set(refs)) or any(ref not in aliases for ref in refs):
+        return []
+    return [aliases[ref] for ref in refs]
+
+
 def validate_finding(db: Session, customer_id: str, task: DelegationTask, finding: SpecialistFinding, current_revision: int) -> bool:
     if finding.task_id != task.task_id or finding.plan_revision != current_revision or task.plan_revision != current_revision or finding.status != "ok":
+        return False
+    if finding.model_reviewed != bool(finding.reviewed_source_ids) or not set(finding.reviewed_source_ids).issubset(finding.source_ids) or len(finding.reviewed_source_ids) != len(set(finding.reviewed_source_ids)):
         return False
     if task.specialist == "policy":
         if set(finding.facts) != {"window_days", "clauses"}:
@@ -126,7 +147,10 @@ def build_policy_graph(db: Session):
         if not clauses:
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["policy_evidence_missing"])
         else:
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"window_days": bundle.window_days, "clauses": [{"id": c.id, "title": c.title, "body": c.body} for c in clauses]}, source_ids=[c.id for c in clauses], source_version=bundle.id, queried_at=datetime.now(timezone.utc), tool_calls=1)
+            ranked = review_evidence("policy_agent", task.question_scope, [(c.id, {"title": c.title[:120], "body": c.body[:350]}) for c in clauses])
+            order = {source_id: index for index, source_id in enumerate(ranked)}
+            clauses.sort(key=lambda clause: order.get(clause.id, len(ranked)))
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"window_days": bundle.window_days, "clauses": [{"id": c.id, "title": c.title, "body": c.body} for c in clauses]}, source_ids=[c.id for c in clauses], source_version=bundle.id, queried_at=datetime.now(timezone.utc), tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
         return {"finding": finding.model_dump(mode="json")}
     graph = StateGraph(SpecialistState)
     graph.add_node("inspect_policy", inspect)
@@ -142,7 +166,8 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             try:
                 order, shipments = read_order(access_token, task.verified_order_ref)
                 shipment = shipments[0] if len(shipments) == 1 else None
-                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order["status"], "shipment_status": shipment["status"] if shipment else None, "delivered_at": shipment.get("delivered_at") if shipment else None}, source_ids=[order["id"]] + ([shipment["id"]] if shipment else []), source_version=str(order["version"]), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["package_ambiguous_or_missing"], tool_calls=2)
+                ranked = review_evidence("order_agent", task.question_scope, [(order["id"], {"order_status": order["status"]})] + ([(shipment["id"], {"shipment_status": shipment["status"], "delivered_at": shipment.get("delivered_at")})] if shipment else [])) if shipment else []
+                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order["status"], "shipment_status": shipment["status"] if shipment else None, "delivered_at": shipment.get("delivered_at") if shipment else None}, source_ids=[order["id"]] + ([shipment["id"]] if shipment else []), source_version=str(order["version"]), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["package_ambiguous_or_missing"], tool_calls=2, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
             except (CommerceUnavailable, KeyError, TypeError):
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["commerce_unavailable"], tool_calls=2)
             return {"finding": finding.model_dump(mode="json")}
@@ -152,7 +177,8 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["package_ambiguous"], source_version=str(order.version), tool_calls=1)
         else:
             shipment = shipments[0] if shipments else None
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order.status, "shipment_status": shipment.status if shipment else None, "delivered_at": shipment.delivered_at.isoformat() if shipment and shipment.delivered_at else None}, source_ids=[order.id] + ([shipment.id] if shipment else []), source_version=str(order.version), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["shipment_missing"], tool_calls=1)
+            ranked = review_evidence("order_agent", task.question_scope, [(order.id, {"order_status": order.status})] + ([(shipment.id, {"shipment_status": shipment.status, "delivered_at": shipment.delivered_at.isoformat() if shipment.delivered_at else None})] if shipment else [])) if shipment else []
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order.status, "shipment_status": shipment.status if shipment else None, "delivered_at": shipment.delivered_at.isoformat() if shipment and shipment.delivered_at else None}, source_ids=[order.id] + ([shipment.id] if shipment else []), source_version=str(order.version), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["shipment_missing"], tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
         return {"finding": finding.model_dump(mode="json")}
     graph = StateGraph(SpecialistState)
     graph.add_node("inspect_order", inspect)

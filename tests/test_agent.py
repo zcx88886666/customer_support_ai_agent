@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from langgraph.checkpoint.memory import MemorySaver
 
-from resolveai.agent import classify, run_chat, validate_finding
+from resolveai.agent import classify, run_chat, validate_finding, review_evidence
 from resolveai.domain import DomainError
 from resolveai import models as m
 from resolveai.schemas import ChatInput, DelegationTask, SpecialistFinding
@@ -71,6 +71,26 @@ def test_forged_and_late_specialist_findings_rejected(db):
     assert not validate_finding(db, "cust-01", task, good.model_copy(update={"facts": {**good.facts, "shipment_status": "in_transit"}}), 2)
     assert not validate_finding(db, "cust-01", task, good.model_copy(update={"facts": {**good.facts, "approved": True}}), 2)
     assert not validate_finding(db, "cust-02", task, good, 2)
+    assert not validate_finding(db, "cust-01", task, good.model_copy(update={"model_reviewed": True, "reviewed_source_ids": ["other-customer-order"]}), 2)
+
+
+def test_model_evidence_review_uses_only_verified_aliases(monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import SpecialistReview
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    seen = []
+
+    def respond(task, variables, schema, release):
+        seen.append(variables["question"])
+        return SpecialistReview(selected_evidence=["e2", "e1"], unresolved_conditions=[])
+
+    monkeypatch.setattr(agent, "call_structured", respond)
+    sources = [("private-order-123", {"order_status": "paid"}), ("shipment-456", {"shipment_status": "in_transit"})]
+    assert review_evidence("order_agent", "包裹", sources) == ["shipment-456", "private-order-123"]
+    assert "private-order-123" not in seen[0] and "shipment-456" not in seen[0]
+    monkeypatch.setattr(agent, "call_structured", lambda *args: SpecialistReview(selected_evidence=["e3"], unresolved_conditions=[]))
+    assert review_evidence("order_agent", "包裹", sources) == []
 
 
 def test_return_slots_continue_across_turns_but_confirmation_is_current(db):

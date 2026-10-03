@@ -80,7 +80,7 @@ An approval can become stale if relevant order facts change. Calling the proposa
 cd apps/web && npm run build
 ```
 
-The smoke runner validates 25 fixed JSONL cases and runs the collaboration cases in both modes, each against a fresh SQLite database through the authenticated HTTP API. It writes `manifest.json`, `case_results.jsonl`, `summary.json`, and `report.html` under ignored `evals/reports/<run_id>/`. `summary.json` is the local machine-readable gate. These cases are synthetic development cases, not a human-reviewed locked benchmark or a measured real-model comparison.
+The smoke runner validates 25 fixed JSONL cases and runs the collaboration cases in both modes, each against a fresh SQLite database through the authenticated HTTP API. It writes `manifest.json`, `case_results.jsonl`, `summary.json`, and `report.html` under ignored `evals/reports/<run_id>/`. `summary.json` is the local machine-readable gate. These cases are synthetic development cases, not a human-reviewed locked benchmark or a measured real-model comparison. The [stateful refund tests](docs/implementation/refund-stateful-2026-10-03.md) add generated action ordering and stale approved-fact checks.
 
 To regenerate and independently validate large synthetic CSV worlds:
 

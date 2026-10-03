@@ -1,0 +1,7 @@
+# Worker container kill and restart — 2026-10-03
+
+A fresh `resolveai_worker_restart_20261003` PostgreSQL 17 database was migrated and populated with one eligible synthetic return, warehouse receipt, passing inspection, approved rule proposal, and zero ledger entries. The actual 30-second Docker worker loop issued one 1,018-cent simulated refund. After that logged commit, its temporary container was force-killed with `docker kill` and a new container was started against the same database. The new process logged `issued_ledger_ids=[]`.
+
+The [database verifier](../../scripts/verify_worker_restart.py) checked one ledger, one issuance audit, the full paid amount and quantity on the order item, and one order-version increment. The temporary worker was stopped after verification. This tests recovery when a worker process is lost **after** a committed issuance. The separate [overlap and rollback test](refund-worker-recovery-2026-10-03.md) covers two concurrent workers and a transaction rolled back before commit. Neither test uses a real payment provider or the live demo database.
+
+Reproduction: create a fresh isolated PostgreSQL database, run `alembic upgrade head` and `python scripts/verify_worker_restart.py prepare` with `DATABASE_URL` targeting it, start the same `compose-worker` loop shown in [Compose](../../infra/compose/compose.yaml), wait for the first issuance log, force-stop that temporary container, start a new one against the same database, and run `python scripts/verify_worker_restart.py verify`. Keep Cloud keys unset for this check.

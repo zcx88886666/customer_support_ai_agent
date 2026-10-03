@@ -48,6 +48,8 @@ export AUTH_MODE=mock
 
 The mock API requires both `X-Mock-Actor` and `X-Mock-Role`. Try `cust-01` and `customer` at [the local API docs](http://127.0.0.1:8000/docs). `cust-02` owns demo orders 05, 10, 15, 20, and 25. Mock identity is only for loopback development; set `AUTH_MODE=oidc` and use Keycloak for a shared environment. The API verifies JWT signature, issuer, audience, expiry, role, and customer mapping. The read-only Commerce MCP service also verifies the JWT and order ownership.
 
+When a specialist reports a conflict, the coordinator retries at most twice and reuses unaffected evidence only after checking it against current database facts. The isolated [PostgreSQL conflict report](docs/implementation/specialist-conflict-2026-10-03.md) records the real checkpoint run and its limits.
+
 The web UI is optional for the mock path:
 
 ```bash

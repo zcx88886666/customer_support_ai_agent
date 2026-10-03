@@ -40,6 +40,7 @@ Updated 2026-10-03. This log records encountered failures, fixes, and open integ
 | Playwright's reason locator matched the confirmation checkbox | Narrowed the locator to the reason textbox. The rerun passed both isolated browser exception journeys; PostgreSQL checks verified zero refund before the worker and one correct refund afterward. See [browser exception report](browser-exceptions-2026-10-03.md). |
 | Live 30-second deadline delivery had not been exercised | Seeded one due-soon and one overdue synthetic receipt in isolated PostgreSQL 17, ran the actual worker loop, and checked exactly two alerts, two audit events, and no ledger. A later loop produced no duplicate alerts. See [deadline report](deadline-delivery-2026-10-03.md). |
 | Refund action ordering had no generated stateful safety test | Added 100 generated action sequences plus forced success/rejection/inspection-failure examples and stale approved-fact checks. The full Python suite passed 43 tests; see [stateful test report](refund-stateful-2026-10-03.md). |
+| A specialist `conflict` result was treated as partial evidence instead of triggering Replan | Added at most two conflict retries, guarded reuse of unaffected findings, and exact policy clause content checks. Python suite passed 46 tests, smoke passed 28/28, and an isolated PostgreSQL `PostgresSaver` run called the order branch twice and policy branch once before answering. See [conflict report](specialist-conflict-2026-10-03.md). |
 
 ## Open gates needing external runtime, credentials, or further implementation
 

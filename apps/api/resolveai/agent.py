@@ -31,6 +31,8 @@ class AgentState(TypedDict, total=False):
     intents: list[str]
     route: dict
     tasks: list[dict]
+    dispatch_tasks: list[dict]
+    reuse_findings: dict[str, dict]
     findings: Annotated[list[dict], operator.add]
     answer: str
     status: str
@@ -121,9 +123,13 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
         if not bundle or finding.source_version != bundle.id or finding.facts.get("window_days") != bundle.window_days or not finding.source_ids:
             return False
         clauses = db.scalars(select(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle.id, m.PolicyClause.id.in_(finding.source_ids))).all()
-        if len(clauses) != len(set(finding.source_ids)):
+        if len(finding.source_ids) != len(set(finding.source_ids)) or len(clauses) != len(finding.source_ids):
             return False
-        return {clause["id"] for clause in finding.facts.get("clauses", [])} == set(finding.source_ids)
+        claimed = finding.facts.get("clauses")
+        if not isinstance(claimed, list) or len(claimed) != len(clauses):
+            return False
+        actual = {clause.id: {"id": clause.id, "title": clause.title, "body": clause.body} for clause in clauses}
+        return all(isinstance(clause, dict) and set(clause) == {"id", "title", "body"} and isinstance(clause["id"], str) and actual.get(clause["id"]) == clause for clause in claimed) and {clause["id"] for clause in claimed} == set(finding.source_ids)
     if task.specialist == "order":
         if set(finding.facts) != {"order_status", "shipment_status", "delivered_at"}:
             return False
@@ -222,20 +228,29 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             # Baseline still gathers both facts; it does so in one node.
             pass
         tasks = []
+        dispatched = []
+        reused = []
         for specialist, needed in (("order", needs_order), ("policy", needs_policy)):
             if needed:
                 task = DelegationTask(task_id=uuid4().hex, thread_id=state["thread_id"], plan_revision=state["plan_revision"], specialist=specialist, question_scope=state["text"][:160], verified_order_ref=state.get("order_id") if specialist == "order" else None, policy_bundle_id=state["bundle_id"] if specialist == "policy" else None, evidence_version_hint=state.get("order_version"), deadline=datetime.now(timezone.utc) + timedelta(seconds=10))
                 tasks.append(task.model_dump(mode="json"))
-        return {"tasks": tasks}
+                prior = state.get("reuse_findings", {}).get(specialist)
+                if prior:
+                    finding = SpecialistFinding.model_validate({**prior, "task_id": task.task_id, "plan_revision": task.plan_revision})
+                    if validate_finding(db, customer_id, task, finding, state["plan_revision"]):
+                        reused.append(finding.model_dump(mode="json"))
+                        continue
+                dispatched.append(task.model_dump(mode="json"))
+        return {"tasks": tasks, "dispatch_tasks": dispatched, "findings": reused}
 
     def fanout(state: AgentState):
         if state.get("status") != "ready":
             return "answer"
-        if not state.get("tasks"):
+        if not state.get("dispatch_tasks"):
             return "answer"
         if mode == "single":
             return "single"
-        return [Send("specialist", {"tasks": [task], "findings": [], "bundle_id": state["bundle_id"], "order_id": state.get("order_id"), "order_version": state.get("order_version"), "plan_revision": state["plan_revision"], "thread_id": state["thread_id"], "customer_id": state["customer_id"], "text": state["text"], "intents": state["intents"], "route": state["route"], "status": state["status"], "mode": mode}) for task in state["tasks"]]
+        return [Send("specialist", {"tasks": [task], "findings": [], "bundle_id": state["bundle_id"], "order_id": state.get("order_id"), "order_version": state.get("order_version"), "plan_revision": state["plan_revision"], "thread_id": state["thread_id"], "customer_id": state["customer_id"], "text": state["text"], "intents": state["intents"], "route": state["route"], "status": state["status"], "mode": mode}) for task in state["dispatch_tasks"]]
 
     def specialist(state: AgentState):
         task = DelegationTask.model_validate(state["tasks"][0])
@@ -253,7 +268,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
 
     def single(state: AgentState):
         findings = []
-        for task in state["tasks"]:
+        for task in state["dispatch_tasks"]:
             findings.extend(specialist({"tasks": [task]})["findings"])
         return {"findings": findings}
 
@@ -265,6 +280,8 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         for raw in state.get("findings", []):
             finding = SpecialistFinding.model_validate(raw)
             task = tasks.get(finding.task_id)
+            if task and finding.status == "conflict" and finding.plan_revision == state["plan_revision"]:
+                return {"status": "replan", "replan_reason": "specialist_conflict"}
             if not task or not validate_finding(db, customer_id, task, finding, state["plan_revision"]):
                 continue
             validated.append((task.specialist, finding))
@@ -362,10 +379,11 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
     else:
         from .checkpoint import parent_checkpointer
         replan_count = 0
+        reuse_findings: dict[str, dict] = {}
         while True:
             with parent_checkpointer() as checkpointer:
                 graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token)
-                state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": []}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
+                state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": [], "reuse_findings": reuse_findings}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
             if state.get("status") != "replan":
                 result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode, "replan_count": replan_count}
                 break
@@ -373,6 +391,9 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
                 result = {"status": "handoff", "answer": "业务事实持续变化，已转人工处理。", "route": decision.model_dump(), "plan_revision": revision, "findings": [], "agent_mode": body.agent_mode, "replan_count": replan_count}
                 break
             replan_count += 1
+            tasks_by_id = {task["task_id"]: task["specialist"] for task in state.get("tasks", [])}
+            keep = {"policy"} if state.get("replan_reason") == "order_changed" else {"order"} if state.get("replan_reason") == "policy_changed" else {"order", "policy"}
+            reuse_findings = {tasks_by_id[finding["task_id"]]: finding for finding in state.get("findings", []) if finding.get("status") == "ok" and finding.get("task_id") in tasks_by_id and tasks_by_id[finding["task_id"]] in keep}
             db.expire_all()
             revision += 1
     if result["status"] == "clarify" and (int(old.get("clarifications", 0)) >= 2 or (decision.intents == ["unknown"] and int(old.get("unknown_clarifications", 0)) >= 1)):

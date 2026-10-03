@@ -6,6 +6,7 @@ import Keycloak from "keycloak-js";
 type Role = "customer" | "support" | "warehouse" | "supervisor";
 type Order = { id: string; status: string; version: number };
 type Item = { id: string; quantity: number; paid_cents: number };
+type Shipment = { id: string; status: string; delivered_at: string | null };
 type Proposal = { id: string; return_id: string; amount_cents: number; status: string };
 type DeadlineAlert = { return_id: string; kind: string; deadline_at: string };
 
@@ -19,6 +20,9 @@ export default function Home() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderId, setOrderId] = useState("demo-order-01");
   const [items, setItems] = useState<Item[]>([]);
+  const [shipments, setShipments] = useState<Shipment[]>([]);
+  const [shipmentId, setShipmentId] = useState("");
+  const [pendingShipmentOptions, setPendingShipmentOptions] = useState<string[]>([]);
   const [message, setMessage] = useState("包裹没到能退吗");
   const [answer, setAnswer] = useState("");
   const [agentMode, setAgentMode] = useState<"single" | "collab">("collab");
@@ -36,7 +40,7 @@ export default function Home() {
 
   useEffect(() => {
     threadId.current = crypto.randomUUID();
-    setOrders([]); setItems([]); setAnswer(""); setConfirmed(false);
+    setOrders([]); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setAnswer(""); setConfirmed(false);
     submission.current = { signature: "", key: "" };
   }, [actor, role]);
 
@@ -73,12 +77,16 @@ export default function Home() {
     try { setOrders(await call("/orders")); setNotice(""); } catch (error) { setNotice(String(error)); }
   }
   async function loadOrder(id: string) {
-    try { const value = await call(`/orders/${encodeURIComponent(id)}`); setItems(value.items); setOrderId(id); setNotice(""); } catch (error) { setNotice(String(error)); }
+    try {
+      const [value, packages] = await Promise.all([call(`/orders/${encodeURIComponent(id)}`), call(`/orders/${encodeURIComponent(id)}/shipments`)]);
+      setItems(value.items); setShipments(packages); setShipmentId(packages.length === 1 ? packages[0].id : ""); setPendingShipmentOptions([]); setOrderId(id); setNotice("");
+    } catch (error) { setNotice(String(error)); }
   }
   async function sendChat() {
     try {
-      const value = await call("/chat", { method: "POST", body: JSON.stringify({ thread_id: threadId.current, message, order_id: orderId || null, agent_mode: agentMode }) });
+      const value = await call("/chat", { method: "POST", body: JSON.stringify({ thread_id: threadId.current, message, order_id: orderId || null, shipment_id: shipmentId || null, agent_mode: agentMode }) });
       setAnswer(value.answer);
+      setPendingShipmentOptions(value.shipment_options || []);
       setNotice(`${value.status} · ${value.findings?.length || 0} 条专职证据`);
     } catch (error) { setNotice(String(error)); }
   }
@@ -109,8 +117,8 @@ export default function Home() {
     <div className="grid">
       {role === "support" && <section className="card"><h2>已分配工单</h2><button onClick={async () => { try { setTickets(await call("/tickets")); } catch (error) { setNotice(String(error)); } }}>刷新工单</button><ul>{tickets.map((ticket) => <li key={ticket.id}>{ticket.id} · {ticket.topic} · {ticket.status}</li>)}</ul></section>}
       {role === "customer" && <>
-        <section className="card"><h2>我的订单</h2><button onClick={loadOrders}>刷新订单</button><ul>{orders.map((order) => <li key={order.id}><button className="secondary" onClick={() => loadOrder(order.id)}>{order.id}</button> {order.status}</li>)}</ul><label>订单编号<input value={orderId} onChange={(e) => setOrderId(e.target.value)} /></label><button onClick={() => loadOrder(orderId)}>查看商品</button><pre>{JSON.stringify(items, null, 2)}</pre></section>
-        <section className="card"><h2>咨询</h2><label>问题<textarea value={message} onChange={(e) => setMessage(e.target.value)} /></label><label>Agent 模式<select value={agentMode} onChange={(e) => setAgentMode(e.target.value as "single" | "collab")}><option value="single">单图基线</option><option value="collab">双专职协作</option></select></label><button onClick={sendChat}>发送</button><pre>{answer}</pre></section>
+        <section className="card"><h2>我的订单</h2><button onClick={loadOrders}>刷新订单</button><ul>{orders.map((order) => <li key={order.id}><button className="secondary" onClick={() => loadOrder(order.id)}>{order.id}</button> {order.status}</li>)}</ul><label>订单编号<input value={orderId} onChange={(e) => { setOrderId(e.target.value); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); }} /></label><button onClick={() => loadOrder(orderId)}>查看商品</button><pre>{JSON.stringify(items, null, 2)}</pre></section>
+        <section className="card"><h2>咨询</h2><label>问题<textarea value={message} onChange={(e) => setMessage(e.target.value)} /></label>{(shipments.length > 1 || pendingShipmentOptions.length > 1) && <label>查询包裹<select value={shipmentId} onChange={(e) => setShipmentId(e.target.value)}><option value="">请选择包裹</option>{(shipments.length > 1 ? shipments.map((row) => row.id) : pendingShipmentOptions).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>}<label>Agent 模式<select value={agentMode} onChange={(e) => setAgentMode(e.target.value as "single" | "collab")}><option value="single">单图基线</option><option value="collab">双专职协作</option></select></label><button onClick={sendChat}>发送</button><pre>{answer}</pre></section>
         <section className="card"><h2>申请退货</h2><p>订单 {orderId} · 商品 {items[0]?.id || "请先查看商品"}</p><label>数量<input type="number" min="1" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label>原因<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><label><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />我确认订单、商品、数量、原因并提交申请</label><button disabled={!confirmed || !items[0]} onClick={submitReturn}>提交退货</button><p>{returnId}</p></section>
       </>}
       {role === "warehouse" && <section className="card"><h2>仓库</h2><label>退货申请 ID<input value={returnId} onChange={(e) => setReturnId(e.target.value)} /></label><label>实收数量<input type="number" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/receipt`, { quantity })}>记录入库</button><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: true, note: "intact" })}>质检通过</button><button className="secondary" onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: false, note: "exception" })}>质检异常</button><button onClick={() => warehouse(`/returns/${encodeURIComponent(returnId)}/proposal`, {})}>生成规则提案</button></section>}

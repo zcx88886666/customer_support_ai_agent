@@ -40,6 +40,33 @@ def test_single_domain_and_thread_isolation(db):
         run_chat(db, "cust-02", ChatInput(thread_id="thread-2", message="政策是什么"))
 
 
+def test_multiple_packages_require_owned_selection_and_resume(db):
+    db.add(m.Shipment(id="second-package-02", order_id="demo-order-02", status="delivered", delivered_at=datetime(2026, 9, 28, 12, tzinfo=timezone.utc), version=1))
+    db.flush()
+    first = run_chat(db, "cust-01", ChatInput(thread_id="package-choice", message="查包裹物流", order_id="demo-order-02", agent_mode="collab"))
+    assert first["status"] == "clarify"
+    assert set(first["shipment_options"]) == {"demo-shipment-02", "second-package-02"}
+    assert first["findings"] == []
+    with pytest.raises(DomainError) as foreign:
+        run_chat(db, "cust-01", ChatInput(thread_id="package-choice", message="这个", shipment_id="demo-shipment-05"))
+    assert foreign.value.status == 404
+    second = run_chat(db, "cust-01", ChatInput(thread_id="package-choice", message="这个", shipment_id="second-package-02", agent_mode="collab"))
+    assert second["status"] == "answered" and second["plan_revision"] == 2
+    assert second["findings"][0]["source_ids"] == ["demo-order-02", "second-package-02"]
+    assert "second-package-02" in second["answer"] and "delivered" in second["answer"]
+    assert db.get(m.ThreadState, "package-choice").state["shipment_id"] == "second-package-02"
+
+
+def test_order_change_clears_pending_package_choice(db):
+    db.add(m.Shipment(id="second-package-change", order_id="demo-order-02", status="delivered", delivered_at=datetime(2026, 9, 28, 12, tzinfo=timezone.utc), version=1))
+    db.flush()
+    assert run_chat(db, "cust-01", ChatInput(thread_id="package-order-change", message="查包裹物流", order_id="demo-order-02"))["status"] == "clarify"
+    changed = run_chat(db, "cust-01", ChatInput(thread_id="package-order-change", message="这个", order_id="demo-order-01"))
+    assert changed["status"] == "answered"
+    assert changed["findings"][0]["source_ids"] == ["demo-order-01", "demo-shipment-01"]
+    assert db.get(m.ThreadState, "package-order-change").state["shipment_id"] is None
+
+
 def test_checkpoint_does_not_replay_previous_turn_findings(db, monkeypatch):
     saver = MemorySaver()
 

@@ -64,6 +64,7 @@ class ChatInput(BaseModel):
     thread_id: str = Field(min_length=1, max_length=64)
     message: str = Field(min_length=1, max_length=2000)
     order_id: str | None = None
+    shipment_id: str | None = None
     item_id: str | None = None
     quantity: int | None = None
     reason: str | None = None
@@ -85,6 +86,7 @@ class DelegationTask(BaseModel):
     specialist: Literal["policy", "order"]
     question_scope: str
     verified_order_ref: str | None = None
+    verified_shipment_ref: str | None = None
     policy_bundle_id: str | None = None
     evidence_version_hint: int | None = None
     deadline: datetime

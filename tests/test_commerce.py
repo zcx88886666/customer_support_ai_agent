@@ -52,3 +52,25 @@ def test_oidc_agent_uses_mcp_and_never_checkpoints_token(db, monkeypatch):
     result = agent.run_chat(db, "cust-01", ChatInput(thread_id="mcp-fail", message="包裹到哪里", order_id="demo-order-02"), access_token="synthetic-secret")
     assert result["findings"][0]["status"] == "error"
     assert "部分证据未核实" in result["answer"]
+
+
+def test_oidc_mcp_package_choice_stays_inside_owned_order(db, monkeypatch):
+    from resolveai import models as m
+
+    db.add(m.Shipment(id="mcp-package-02", order_id="demo-order-02", status="delivered", delivered_at=datetime(2026, 9, 28, 12, tzinfo=timezone.utc), version=1))
+    db.flush()
+    monkeypatch.setattr(agent, "settings", replace(agent.settings, auth_mode="oidc"))
+
+    def read(_token, order_id):
+        return {"id": order_id, "status": "paid", "version": 1}, [
+            {"id": "demo-shipment-02", "status": "in_transit", "delivered_at": None},
+            {"id": "mcp-package-02", "status": "delivered", "delivered_at": datetime(2026, 9, 28, 12, tzinfo=timezone.utc).isoformat()},
+        ]
+
+    monkeypatch.setattr(agent, "read_order", read)
+    first = agent.run_chat(db, "cust-01", ChatInput(thread_id="mcp-package", message="查包裹物流", order_id="demo-order-02"), access_token="synthetic-secret")
+    assert first["status"] == "clarify" and len(first["shipment_options"]) == 2
+    second = agent.run_chat(db, "cust-01", ChatInput(thread_id="mcp-package", message="这个", shipment_id="mcp-package-02"), access_token="synthetic-secret")
+    assert second["status"] == "answered"
+    assert second["findings"][0]["source_ids"] == ["demo-order-02", "mcp-package-02"]
+    assert "synthetic-secret" not in str(db.get(m.ThreadState, "mcp-package").state)

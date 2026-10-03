@@ -25,6 +25,7 @@ class AgentState(TypedDict, total=False):
     customer_id: str
     text: str
     order_id: str | None
+    shipment_id: str | None
     bundle_id: str
     order_version: int | None
     plan_revision: int
@@ -138,9 +139,9 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
         except d.DomainError:
             return False
         shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
-        if len(shipments) != 1 or finding.source_version != str(order.version) or finding.source_ids != [order.id, shipments[0].id]:
+        shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
+        if shipment is None or finding.source_version != str(order.version) or finding.source_ids != [order.id, shipment.id]:
             return False
-        shipment = shipments[0]
         return finding.facts.get("order_status") == order.status and finding.facts.get("shipment_status") == shipment.status and finding.facts.get("delivered_at") == (shipment.delivered_at.isoformat() if shipment.delivered_at else None)
     return False
 
@@ -174,7 +175,7 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
         if settings.auth_mode == "oidc":
             try:
                 order, shipments = read_order(access_token, task.verified_order_ref)
-                shipment = shipments[0] if len(shipments) == 1 else None
+                shipment = next((row for row in shipments if row.get("id") == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
                 ranked = review_evidence("order_agent", task.question_scope, [(order["id"], {"order_status": order["status"]})] + ([(shipment["id"], {"shipment_status": shipment["status"], "delivered_at": shipment.get("delivered_at")})] if shipment else [])) if shipment else []
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order["status"], "shipment_status": shipment["status"] if shipment else None, "delivered_at": shipment.get("delivered_at") if shipment else None}, source_ids=[order["id"]] + ([shipment["id"]] if shipment else []), source_version=str(order["version"]), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["package_ambiguous_or_missing"], tool_calls=2, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
             except (CommerceUnavailable, KeyError, TypeError):
@@ -182,10 +183,10 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             return {"finding": finding.model_dump(mode="json")}
         order = d.owned_order(db, customer_id, task.verified_order_ref)
         shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
-        if len(shipments) > 1:
+        shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
+        if len(shipments) > 1 and shipment is None:
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["package_ambiguous"], source_version=str(order.version), tool_calls=1)
         else:
-            shipment = shipments[0] if shipments else None
             ranked = review_evidence("order_agent", task.question_scope, [(order.id, {"order_status": order.status})] + ([(shipment.id, {"shipment_status": shipment.status, "delivered_at": shipment.delivered_at.isoformat() if shipment.delivered_at else None})] if shipment else [])) if shipment else []
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order.status, "shipment_status": shipment.status if shipment else None, "delivered_at": shipment.delivered_at.isoformat() if shipment and shipment.delivered_at else None}, source_ids=[order.id] + ([shipment.id] if shipment else []), source_version=str(order.version), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["shipment_missing"], tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
         return {"finding": finding.model_dump(mode="json")}
@@ -232,7 +233,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         reused = []
         for specialist, needed in (("order", needs_order), ("policy", needs_policy)):
             if needed:
-                task = DelegationTask(task_id=uuid4().hex, thread_id=state["thread_id"], plan_revision=state["plan_revision"], specialist=specialist, question_scope=state["text"][:160], verified_order_ref=state.get("order_id") if specialist == "order" else None, policy_bundle_id=state["bundle_id"] if specialist == "policy" else None, evidence_version_hint=state.get("order_version"), deadline=datetime.now(timezone.utc) + timedelta(seconds=10))
+                task = DelegationTask(task_id=uuid4().hex, thread_id=state["thread_id"], plan_revision=state["plan_revision"], specialist=specialist, question_scope=state["text"][:160], verified_order_ref=state.get("order_id") if specialist == "order" else None, verified_shipment_ref=state.get("shipment_id") if specialist == "order" else None, policy_bundle_id=state["bundle_id"] if specialist == "policy" else None, evidence_version_hint=state.get("order_version"), deadline=datetime.now(timezone.utc) + timedelta(seconds=10))
                 tasks.append(task.model_dump(mode="json"))
                 prior = state.get("reuse_findings", {}).get(specialist)
                 if prior:
@@ -250,7 +251,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             return "answer"
         if mode == "single":
             return "single"
-        return [Send("specialist", {"tasks": [task], "findings": [], "bundle_id": state["bundle_id"], "order_id": state.get("order_id"), "order_version": state.get("order_version"), "plan_revision": state["plan_revision"], "thread_id": state["thread_id"], "customer_id": state["customer_id"], "text": state["text"], "intents": state["intents"], "route": state["route"], "status": state["status"], "mode": mode}) for task in state["dispatch_tasks"]]
+        return [Send("specialist", {"tasks": [task], "findings": [], "bundle_id": state["bundle_id"], "order_id": state.get("order_id"), "shipment_id": state.get("shipment_id"), "order_version": state.get("order_version"), "plan_revision": state["plan_revision"], "thread_id": state["thread_id"], "customer_id": state["customer_id"], "text": state["text"], "intents": state["intents"], "route": state["route"], "status": state["status"], "mode": mode}) for task in state["dispatch_tasks"]]
 
     def specialist(state: AgentState):
         task = DelegationTask.model_validate(state["tasks"][0])
@@ -298,7 +299,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         for role, finding in validated:
             if role == "order":
                 status = finding.facts.get("shipment_status")
-                pieces.append(f"查到的订单事实：包裹状态为 {status or '未知'}。")
+                pieces.append(f"查到的订单事实：包裹 {finding.source_ids[1]} 状态为 {status or '未知'}。")
                 if status != "delivered" and ("policy_qa" in state["intents"] or "return_request" in state["intents"]):
                     pieces.append("包裹尚未确认签收，不能按签收次日起算的七日无理由退货流程直接提交；请联系人工核查配送异常。")
             if role == "policy":
@@ -360,6 +361,11 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
     elif order_id:
         d.owned_order(db, customer_id, order_id)
     order_changed = bool(continuing and body.order_id and body.order_id != old.get("order_id"))
+    shipment_id = body.shipment_id or (None if order_changed else old.get("shipment_id"))
+    if shipment_id:
+        shipment = db.get(m.Shipment, shipment_id)
+        if not order_id or shipment is None or shipment.order_id != order_id:
+            raise d.DomainError("shipment_not_found", "Shipment unavailable", 404)
     item_id = body.item_id or (None if order_changed else old.get("item_id"))
     quantity = body.quantity or (None if order_changed else old.get("quantity"))
     reason = body.reason or (None if order_changed else old.get("reason"))
@@ -369,6 +375,8 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
         result = {"status": "handoff", "answer": "已转人工处理。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif decision.intents == ["unknown"]:
         result = {"status": "clarify", "answer": "请说明要查询的订单、物流或退货问题。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+    elif order_id and any(intent in decision.intents for intent in ("shipment_tracking", "order_status", "refund_request", "cancel_request")) and not shipment_id and len(ships := db.scalars(select(m.Shipment).where(m.Shipment.order_id == order_id)).all()) > 1:
+        result = {"status": "clarify", "answer": "此订单有多个包裹，请选择要查询的包裹编号。", "shipment_options": [ship.id for ship in ships], "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif "return_request" in decision.intents:
         missing = next((pair for pair in ((not order_id, "请提供订单编号。"), (not item_id, "请提供要退的商品项编号。"), (not quantity, "请提供退货数量。"), (not reason, "请提供退货原因。"), (not body.confirmed, "请明确确认订单、商品、数量、原因并提交退货申请。"), (not body.idempotency_key, "请使用提交按钮生成幂等请求编号。")) if pair[0]), (False, ""))
         if missing[0]:
@@ -383,7 +391,7 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
         while True:
             with parent_checkpointer() as checkpointer:
                 graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token)
-                state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "plan_revision": revision, "mode": body.agent_mode, "findings": [], "reuse_findings": reuse_findings}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
+                state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "shipment_id": shipment_id, "plan_revision": revision, "mode": body.agent_mode, "findings": [], "reuse_findings": reuse_findings}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
             if state.get("status") != "replan":
                 result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode, "replan_count": replan_count}
                 break
@@ -407,7 +415,7 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
             db.flush()
             d.audit(db, customer_id, "create_ticket", "ticket", ticket.id)
         result["ticket_id"] = ticket.id
-    safe_state = {"order_id": order_id, "task_id": task_id, "plan_revision": revision, "status": result["status"], "clarifications": int(old.get("clarifications", 0)) + 1 if result["status"] == "clarify" else 0}
+    safe_state = {"order_id": order_id, "shipment_id": shipment_id, "task_id": task_id, "plan_revision": revision, "status": result["status"], "clarifications": int(old.get("clarifications", 0)) + 1 if result["status"] == "clarify" else 0}
     if result["status"] == "clarify":
         safe_state["pending_route"] = decision.model_dump()
         safe_state["unknown_clarifications"] = int(old.get("unknown_clarifications", 0)) + 1 if decision.intents == ["unknown"] else 0

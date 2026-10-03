@@ -213,22 +213,34 @@ def decide_proposal(db: Session, actor: str, proposal_id: str, approve: bool, at
 
 
 def issue_refund(db: Session, proposal_id: str, key: str, at: datetime) -> m.RefundLedger:
+    if not key.strip():
+        raise DomainError("idempotency_required", "Idempotency key required", 422)
+    # Serialize all refunds for this order before checking for a prior ledger.
+    # A pre-lock read can miss another worker's uncommitted issuance and leave
+    # stale ORM objects in this session after the lock is released.
+    order = db.scalar(
+        select(m.Order)
+        .join(m.ReturnRequest, m.ReturnRequest.order_id == m.Order.id)
+        .join(m.RefundProposal, m.RefundProposal.return_id == m.ReturnRequest.id)
+        .where(m.RefundProposal.id == proposal_id)
+        .with_for_update(of=m.Order)
+        .execution_options(populate_existing=True)
+    )
+    if order is None:
+        raise DomainError("approval_required", "Valid supervisor approval required")
     existing = db.scalar(select(m.RefundLedger).where(m.RefundLedger.proposal_id == proposal_id))
     if existing:
         if existing.idempotency_key != key:
             raise DomainError("idempotency_conflict", "Proposal already issued using another key")
         return existing
-    if not key.strip():
-        raise DomainError("idempotency_required", "Idempotency key required", 422)
-    proposal = db.get(m.RefundProposal, proposal_id)
+    proposal = db.get(m.RefundProposal, proposal_id, populate_existing=True)
     if not proposal or proposal.status != "approved":
         raise DomainError("approval_required", "Valid supervisor approval required")
     approval = db.scalar(select(m.Approval).where(m.Approval.proposal_id == proposal_id, m.Approval.decision == "approved"))
     if not approval:
         raise DomainError("approval_required", "Valid supervisor approval required")
-    request = db.get(m.ReturnRequest, proposal.return_id)
-    order = db.scalar(select(m.Order).where(m.Order.id == request.order_id).with_for_update())
-    item = db.scalar(select(m.OrderItem).where(m.OrderItem.id == request.order_item_id).with_for_update())
+    request = db.get(m.ReturnRequest, proposal.return_id, populate_existing=True)
+    item = db.scalar(select(m.OrderItem).where(m.OrderItem.id == request.order_item_id).with_for_update().execution_options(populate_existing=True))
     receipt = db.scalar(select(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == request.id))
     inspection = db.get(m.Inspection, proposal.inspection_id)
     if not receipt or not inspection or not inspection.passed or inspection.receipt_id != receipt.id:

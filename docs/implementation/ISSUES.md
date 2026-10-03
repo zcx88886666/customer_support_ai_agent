@@ -1,6 +1,6 @@
 # Implementation and verification log
 
-Updated 2026-10-02. This log records encountered failures, fixes, and open integration gates. It is not a claim that the v6 plan is fully finished.
+Updated 2026-10-03. This log records encountered failures, fixes, and open integration gates. It is not a claim that the v6 plan is fully finished.
 
 ## Resolved during implementation
 
@@ -36,12 +36,13 @@ Updated 2026-10-02. This log records encountered failures, fixes, and open integ
 | Historical policy rollback could not verify the demo bundle | The original seed used a fixed marker hash, and an active-policy switch could violate the unique index if updates flushed in the wrong order. A data migration repaired only the exact synthetic fixture; ordered flushes, index validation, a supervisor-only rollback endpoint, and audit were added. SQLite migration, Python tests, and Docker PostgreSQL rollback passed; see [rollback report](policy-rollback-2026-10-02.md). |
 | Million-order import and API capacity were unmeasured | Imported the validated million-order CSV world into a separate Docker PostgreSQL 17 database in 122.533 seconds, verified six zero-violation checks, and ran 20/50/100-user no-key k6 profiles. At 100 users there were zero HTTP errors but overall P95 reached 2.10 seconds and chat P95 4.99 seconds. See [load report](million-order-load-2026-10-02.md). |
 | Browser login accepted clicks before Keycloak initialization | The first isolated three-role browser workflow timed out on the Keycloak login form while the page still showed “未登录”. Disabled login/logout until the client is ready, rebuilt the web image, and reran the full workflow successfully. The four existing role views passed too; see [browser workflow report](browser-workflow-2026-10-02.md). |
+| A concurrent refund worker could read no ledger before waiting on the order lock | Moved the replay check behind the order lock and refreshed mutable ORM facts. In an isolated PostgreSQL 17 database, two observed lock waiters returned one ledger ID; one issuance audit and one balance change remained. A flushed but rolled-back issuance was recovered by a later worker run, and a separate worker process issued nothing. See [worker recovery report](refund-worker-recovery-2026-10-03.md). |
 
 ## Open gates needing external runtime, credentials, or further implementation
 
 | Gate | Current evidence and next concrete action |
 |---|---|
-| Deeper Docker operations | Docker Compose PostgreSQL 17, PostgresSaver chat, worker execution, API restart, OTel→Jaeger trace, Keycloak code+PKCE logins, and authenticated Commerce MCP calls passed. Refund worker concurrency, full container restart recovery, and live deadline delivery remain unverified. The Git bundle still needs copying to a separate offline medium. |
+| Deeper Docker operations | Docker Compose PostgreSQL 17, PostgresSaver chat, worker execution, API restart, OTel→Jaeger trace, Keycloak code+PKCE logins, and authenticated Commerce MCP calls passed. Isolated PostgreSQL refund worker overlap and pre-commit rollback recovery also passed. Full container kill/restart recovery and live deadline delivery remain unverified. The Git bundle still needs copying to a separate offline medium. |
 | Langfuse Cloud | US project credentials authenticate, six prompts passed drift checks, a masking canary passed in Cloud and Jaeger, a GPT-4o-mini generation recorded usage/cost, and a setup score was read back. One synthetic 25-case/28-execution mock run reconciled all 28 traces, case links, and task-success scores; see [reconciliation report](langfuse-eval-reconciliation-2026-10-02.md). Larger locked-run export, custom dashboards, and measured quota calibration remain open. |
 | OpenRouter real-model path | A local ignored key, one Docker structured-intent call, and two isolated bounded specialist evidence reviews on GPT-4o-mini passed. Provider/schema regression trials, cost measurements, model comparison, full model synthesis/tool choice, and paired locked evaluations remain open. See [specialist review report](specialist-model-review-2026-10-02.md). |
 | Locked evaluation and human review | The 25 smoke cases are original synthetic development fixtures. The planned 30/30/20/20 minimum and expanded suites, two-person critical review, mutation/property suite, paired model comparison, and external benchmarks remain to be built and reviewed. Do not treat 28/28 mock executions as a production success rate. |

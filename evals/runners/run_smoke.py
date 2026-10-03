@@ -15,15 +15,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from resolveai.api import app
 from resolveai.db import Base, get_db, make_engine
-from resolveai.models import RefundLedger
 from resolveai.prompts import PromptRegistry, ROOT
 from resolveai.seed import seed_demo
 from resolveai.telemetry import score as cloud_score
+from score import score_case
 
 
 DATASET = ROOT / "evals/datasets/smoke_demo.jsonl"
@@ -66,24 +65,7 @@ def run_case(case: dict, mode: str, run_id: str) -> dict:
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
             payload = result.json()
             with factory() as db:
-                ledger_count = db.scalar(select(func.count()).select_from(RefundLedger))
-            gold = case["gold"]
-            checks = {"ledger_count": ledger_count == gold.get("ledger_count", 0)}
-            if "error_code" in gold:
-                checks["error_code"] = payload.get("code") == gold["error_code"]
-            else:
-                checks["http_ok"] = result.status_code == 200
-                if "route" in gold:
-                    checks["route"] = payload.get("route", {}).get("route") == gold["route"]
-                if "status" in gold:
-                    checks["status"] = payload.get("status") == gold["status"]
-                if "must_not_status" in gold:
-                    checks["must_not_status"] = payload.get("status") != gold["must_not_status"]
-                for term in gold.get("must_contain", []):
-                    checks[f"contains:{term}"] = term in payload.get("answer", "")
-                if "specialists" in gold:
-                    actual = ["policy" if (finding.get("source_version") or "").startswith("policy-") else "order" for finding in payload.get("findings", [])]
-                    checks["specialists"] = sorted(actual) == sorted(gold["specialists"])
+                checks, ledger_count = score_case(case, payload, result.status_code, db)
             return {"case_id": case["case_id"], "suite": case["suite"], "split": case["split"], "risk_tier": case["risk_tier"], "agent_mode": mode, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_status": result.status_code, "response_status": payload.get("status"), "error_code": payload.get("code"), "latency_ms": elapsed_ms, "specialist_count": len(payload.get("findings", [])), "ledger_count": ledger_count, "trace_id": result.headers.get("x-trace-id")}
         finally:
             app.dependency_overrides.clear()
@@ -117,7 +99,7 @@ def main():
     telemetry = "not_configured" if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")) else "submitted_unreconciled" if all(row.get("cloud_score_submitted") for row in results if row.get("trace_id")) else "incomplete"
     summary = {"run_id": run_id, "counts": dict(counts), "unique_cases": len(cases), "executions": len(results), "critical_failures": critical_failures, "gate_pass": counts.get("fail", 0) == 0 and counts.get("incomplete", 0) == 0, "telemetry_sync": telemetry}
     (folder / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "prompt_release_id": args.release, "prompt_hashes": registry.manifest["prompts"], "source_git_commit": registry.manifest.get("source_git_commit"), "policy_bundle_id": "policy-demo-v1", "model": "deterministic-mock", "scorer_version": "smoke-v1", "seed": "demo-fixed-v1"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "prompt_release_id": args.release, "prompt_hashes": registry.manifest["prompts"], "source_git_commit": registry.manifest.get("source_git_commit"), "policy_bundle_id": "policy-demo-v1", "model": "deterministic-mock", "scorer_version": "smoke-v2", "seed": "demo-fixed-v1"}
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     lines = ["<html><meta charset='utf-8'><title>ResolveAI smoke report</title><body>", f"<h1>Run {html.escape(run_id)}</h1>", f"<p>{len(cases)} unique cases; {len(results)} executions; {counts.get('pass', 0)} pass, {counts.get('fail', 0)} fail, {counts.get('incomplete', 0)} incomplete.</p>", "<table border='1'><tr><th>Case</th><th>Split</th><th>Mode</th><th>Status</th><th>Checks</th></tr>"]
     for row in results:

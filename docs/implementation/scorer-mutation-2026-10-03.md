@@ -1,0 +1,7 @@
+# Database-first scorer adversarial checks — 2026-10-03
+
+The synthetic HTTP runner now uses a separate `smoke-v2` scorer. In addition to route, status, answer terms, and expected ledger count, it checks the final database for expected return count, a matching persisted return ID and create-return audit, an owned handoff ticket, no claim of completed refund without a ledger, ledger ownership and valid approval/inspection/audit evidence, and current owned specialist sources with exact policy clause text. The runner writes the same JSONL/summary/HTML artifacts and records `scorer_version=smoke-v2` in its manifest. Local `summary.json` remains the release gate.
+
+Four adversarial tests supply false outcomes to the scorer. A fabricated “return submitted” response with no database return is rejected; a claim of completed refund without a ledger is rejected; foreign-order and forged policy evidence are rejected; and an unapproved ledger is rejected even when its count matches the gold value. A real approved synthetic refund passes all checks. The tests exercise scorer behavior rather than calculating a mutation score for all application code.
+
+Actual result: **53 Python tests passed**. The 25 unique smoke cases ran in 28 mode executions, with **28 passes**, zero critical failures, and a passing local gate under `smoke-v2`. The current smoke dataset still has only one submitted-return case and no cross-role worker case; broader human-reviewed locked suites and terminal-state scoring remain open.

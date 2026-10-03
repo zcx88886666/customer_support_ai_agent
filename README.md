@@ -66,6 +66,8 @@ Open `http://localhost:3000`. The page exposes the customer, warehouse, and supe
 4. Supervisor: `GET /supervisor/proposals`, then `POST /supervisor/proposals/{id}/decision`.
 5. Controlled worker: run `.venv/bin/python -m resolveai.worker` for the direct local setup. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose calls the worker every 30 seconds; the worker ran in the verified Docker stack. The customer and Agent APIs have no refund issuance endpoint.
 
+An isolated [live worker deadline check](docs/implementation/deadline-delivery-2026-10-03.md) verified that the 30-second loop created one due-soon and one overdue alert with audit events and no refund; a later loop did not duplicate them.
+
 For a full mock HTTP replay on the seeded local database, run `.venv/bin/python scripts/demo_workflow.py`. It is safe to rerun with the same idempotency key; a second run must not add another ledger entry.
 
 An approval can become stale if relevant order facts change. Calling the proposal endpoint again after such a change marks the old proposal stale and creates a new one requiring a new approval. All amounts are integer CNY cents calculated from the recorded paid allocation. The system does not automatically decide damaged goods, delivery disputes, complex payment splits, or exceptions to the demonstrated return policy.

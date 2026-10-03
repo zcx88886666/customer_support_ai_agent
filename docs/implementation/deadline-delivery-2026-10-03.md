@@ -1,0 +1,7 @@
+# Live worker deadline delivery — 2026-10-03
+
+A fresh `resolveai_deadline_delivery_20261003` PostgreSQL 17 database was migrated and seeded with two synthetic returns. One warehouse receipt was eight days old and overdue for the seven-day refund-processing deadline. The other receipt was six days and twelve hours old, inside the final 24-hour warning window. Neither return had passed inspection or obtained approval.
+
+The normal Docker worker command (`while true; do python -m resolveai.worker; sleep 30; done`) ran in a temporary container against this isolated database. Its first loop logged one `overdue` and one `due_soon` alert and no refund ledger issuance. The database verifier found exactly two alert rows, two corresponding audit events, and zero ledger rows. A later loop logged no new alerts; the verifier still found two rows and two events. The temporary worker was then stopped. No live demo data or Cloud keys were used.
+
+Reproduce with a fresh isolated PostgreSQL database and [the verifier](../../scripts/verify_deadline_delivery.py): migrate with `alembic upgrade head`, run `python scripts/verify_deadline_delivery.py prepare`, start the same 30-second worker loop with `DATABASE_URL` targeting that database, then run `python scripts/verify_deadline_delivery.py verify` before and after another loop. The verifier rejects an already used database during preparation. The supervisor read endpoint is covered by the Python deadline test; this run checked scheduled database delivery and idempotency, not external notifications such as email or SMS.

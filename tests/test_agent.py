@@ -82,6 +82,52 @@ def test_clear_eligibility_questions_and_read_only_model_routes_stay_inquiry(mon
     assert read_only.route == "knowledge" and read_only.intents == ["shipment_tracking"]
 
 
+def test_refund_word_does_not_create_return_submission_intent(monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: False)
+    assert classify("我要退款").intents == ["refund_request"]
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="after_sales", intents=["return_request", "refund_request"]))
+    assert classify("我要退款").intents == ["refund_request"]
+    assert classify("我要退货并退款").intents == ["return_request", "refund_request"]
+
+
+def test_model_read_only_and_high_risk_routes_are_normalized(monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["refund_request", "policy_qa"]))
+    refund = classify("refund status")
+    assert refund.route == "after_sales" and refund.intents == ["refund_request"]
+
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["return_request"]))
+    policy = classify("退货规则有哪些")
+    assert policy.route == "knowledge" and policy.intents == ["policy_qa"]
+
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="clarify", intents=["unknown"]))
+    shipment = classify("配送到哪里")
+    assert shipment.route == "knowledge" and shipment.intents == ["shipment_tracking"]
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["order_status"]))
+    delivery = classify("delivery update")
+    assert delivery.route == "knowledge" and delivery.intents == ["shipment_tracking"]
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["order_status", "shipment_tracking"]))
+    assert classify("delivery update").intents == ["shipment_tracking"]
+
+
+def test_model_cannot_silently_drop_explicit_high_risk_action(monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["order_status"]))
+    for text, intent in (("我要退款", "refund_request"), ("取消订单", "cancel_request"), ("我要投诉", "complaint"), ("我要退货", "return_request")):
+        decision = classify(text)
+        assert decision.route == "human_handoff" and decision.intents == [intent]
+
+
 def test_single_domain_and_thread_isolation(db):
     result = run_chat(db, "cust-01", ChatInput(thread_id="thread-2", message="七天无理由退货政策是什么", agent_mode="collab"))
     assert len(result["findings"]) == 1

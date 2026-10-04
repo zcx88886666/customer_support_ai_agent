@@ -30,7 +30,7 @@ from resolveai.seed import seed_demo
 
 MODEL_OPTIONS = {
     "deepseek/deepseek-v3.2": {"input_per_m": 0.2088, "output_per_m": 0.3096,
-                                "output_name": "model_review_deepseek_v32", "default_max_cost_usd": 0.30},
+                                "output_name": "model_review_deepseek_v32", "default_max_cost_usd": 1.00},
     "openai/gpt-6-astra-pro": {"input_per_m": 10.0, "output_per_m": 50.0,
                                 "output_name": "model_review", "default_max_cost_usd": 30.0},
 }
@@ -401,9 +401,18 @@ def main() -> int:
                     failed_usage.append(failure)
                 (output / "errors.log").open("a", encoding="utf-8").write(
                     f"{datetime.now(timezone.utc).isoformat()} {case_id} {type(exc).__name__}: {str(exc)[:240]}\n")
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 402:
-                    (output / "blocker.json").write_text(json.dumps({"kind": "provider_payment_required",
-                        "http_status": 402, "case_id": case_id, "observed_at_utc": datetime.now(timezone.utc).isoformat()}, indent=2) + "\n", encoding="utf-8")
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status_code = exc.response.status_code
+                    try:
+                        provider_message = str((exc.response.json().get("error") or {}).get("message", ""))
+                    except (ValueError, AttributeError):
+                        provider_message = ""
+                    blocker_kind = ("provider_payment_required" if status_code == 402 else
+                                    "provider_key_limit_exceeded" if status_code == 403 and "Key limit exceeded" in provider_message else None)
+                    if blocker_kind:
+                        (output / "blocker.json").write_text(json.dumps({"kind": blocker_kind,
+                            "http_status": status_code, "case_id": case_id,
+                            "observed_at_utc": datetime.now(timezone.utc).isoformat()}, indent=2) + "\n", encoding="utf-8")
                 save()
                 print(json.dumps({"case_id": case_id, "error_type": type(exc).__name__, "reviewed": len(results)}, ensure_ascii=False), file=sys.stderr)
                 return 1

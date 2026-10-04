@@ -4,6 +4,7 @@ import csv
 import json
 import sys
 
+import httpx
 import pytest
 
 from scripts import prepare_minimum_review, run_model_review
@@ -72,3 +73,26 @@ def test_refresh_only_never_loads_api_key(tmp_path, monkeypatch):
     assert manifest["reviewed"] == 0 and manifest["pending"] == 162
     assert manifest["model"] == "deepseek/deepseek-v3.2"
     assert (packet / "model_review_deepseek_v32/human_model_disagreements.csv").exists()
+
+
+def test_deepseek_request_keeps_strict_schema_and_usage(monkeypatch):
+    monkeypatch.setattr(run_model_review, "MODEL", "deepseek/deepseek-v3.2")
+    captured = {}
+    expected = review().model_dump()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(expected)},
+                                                      "finish_reason": "stop"}],
+                                         "usage": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.0001},
+                                         "provider": "synthetic"})
+
+    material = {"case": {"case_id": "one"}}
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        result, usage, audit = run_model_review.request_review(client, "synthetic-test-key", "synthetic prompt",
+                                                               material["case"], material, 3000)
+    assert captured["model"] == "deepseek/deepseek-v3.2"
+    assert captured["provider"]["require_parameters"] is True
+    assert captured["response_format"]["json_schema"]["strict"] is True
+    assert result.decision == "accept" and audit == []
+    assert usage["cost_usd"] == 0.0001 and usage["cost_source"] == "provider"

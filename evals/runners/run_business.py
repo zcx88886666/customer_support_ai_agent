@@ -39,18 +39,23 @@ def load_cases() -> list[dict]:
     return cases
 
 
-def execute(client: TestClient, case: dict, run_id: str) -> tuple[dict, dict]:
+def execute(client: TestClient | None, case: dict, run_id: str, *, post_request=None, issue_worker=None) -> tuple[dict, dict]:
     fixture = case["fixture"]
     customer = fixture["customer_id"]
     order_id = fixture["order_id"]
     item_id = fixture["item_id"]
     statuses: dict[str, int] = {}
     observations: dict = {"preapproval_issued": 0, "worker_replay_issued": 0}
+    issue_worker = issue_worker or worker.issue_approved_once
 
     def post(name: str, path: str, role: str, actor: str, body: dict) -> dict:
-        response = client.post(path, json=body, headers={"x-mock-actor": actor, "x-mock-role": role, "x-eval-run-id": run_id, "x-eval-case-id": case["case_id"]})
-        statuses[name] = response.status_code
-        return response.json()
+        if post_request:
+            status_code, payload = post_request(path, role, actor, body)
+        else:
+            response = client.post(path, json=body, headers={"x-mock-actor": actor, "x-mock-role": role, "x-eval-run-id": run_id, "x-eval-case-id": case["case_id"]})
+            status_code, payload = response.status_code, response.json()
+        statuses[name] = status_code
+        return payload
 
     def create(name: str, reason: str, key: str, confirmed: bool = True) -> dict:
         return post(name, "/returns", "customer", customer, {"order_id": order_id, "order_item_id": item_id, "quantity": 1, "reason": reason, "confirmed": confirmed, "idempotency_key": key})
@@ -76,12 +81,12 @@ def execute(client: TestClient, case: dict, run_id: str) -> tuple[dict, dict]:
     if case["scenario"] == "inspection_exception":
         post("inspection_fail", f"/warehouse/returns/{return_id}/inspection", "warehouse", "warehouse-test", {"passed": False, "note": "damaged"})
         post("proposal_refused", f"/returns/{return_id}/proposal", "warehouse", "warehouse-test", {})
-        observations["worker_issued"] = len(worker.issue_approved_once())
+        observations["worker_issued"] = len(issue_worker())
         return statuses, observations
     post("inspection", f"/warehouse/returns/{return_id}/inspection", "warehouse", "warehouse-test", {"passed": True, "note": "intact"})
     proposal = post("proposal", f"/returns/{return_id}/proposal", "warehouse", "warehouse-test", {})
     proposal_id = proposal["id"]
-    observations["preapproval_issued"] = len(worker.issue_approved_once())
+    observations["preapproval_issued"] = len(issue_worker())
     if case["scenario"] == "stale_proposal":
         create("second_return", "second unit", case["case_id"] + ":second")
         post("stale_approve_refused", f"/supervisor/proposals/{proposal_id}/decision", "supervisor", "supervisor-test", {"approve": True})
@@ -89,8 +94,8 @@ def execute(client: TestClient, case: dict, run_id: str) -> tuple[dict, dict]:
         observations["proposal_replaced"] = proposal["id"] != proposal_id
         proposal_id = proposal["id"]
     post("approve", f"/supervisor/proposals/{proposal_id}/decision", "supervisor", "supervisor-test", {"approve": True})
-    observations["worker_issued"] = len(worker.issue_approved_once())
-    observations["worker_replay_issued"] = len(worker.issue_approved_once())
+    observations["worker_issued"] = len(issue_worker())
+    observations["worker_replay_issued"] = len(issue_worker())
     return statuses, observations
 
 

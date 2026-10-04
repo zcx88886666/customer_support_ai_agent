@@ -102,6 +102,8 @@ Confirmed `language=English` (also `en` or `en-US`) changes parent chat response
 
 The customer page includes consent and language preference controls. The [OIDC browser check](docs/implementation/memory-browser-2026-10-03.md) covers save, next-chat use, deletion, and restoration of the original synthetic profile.
 
+The optional [PostgreSQL memory write-load runner](docs/implementation/memory-write-load-2026-10-03.md) creates a fresh isolated database and measures 1/5/10 concurrent synthetic customer preference corrections and guarded reads. Its report records actual latency and final revocation checks; it leaves the database for inspection.
+
 When an OpenRouter key is already configured, `.venv/bin/python evals/runners/run_paired_model.py` runs the three synthetic composite smoke cases in single and collaborative modes using the configured GPT-4o-mini model. The [measured development report](docs/implementation/paired-model-2026-10-03.md) gives provider-reported usage and cost; it is a small comparison rather than a locked quality benchmark.
 
 To regenerate and independently validate large synthetic CSV worlds:

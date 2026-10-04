@@ -94,3 +94,63 @@ def test_approved_proposal_rejects_changed_order_and_amount(session_factory):
     with session_factory() as db:
         assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
         assert db.get(m.OrderItem, "demo-item-01").refunded_cents == 0
+
+
+@settings(max_examples=30, deadline=None)
+@given(parts=st.sampled_from(([3], [1, 2], [2, 1], [1, 1, 1])), replay=st.booleans())
+def test_partitioned_returns_preserve_paid_allocation_and_ownership(parts: list[int], replay: bool):
+    """Exercise cumulative rounding through committed returns, approvals, and ledgers."""
+    engine = make_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            seed_demo(db, AT)
+        total_quantity = 0
+        for index, quantity in enumerate(parts):
+            key = f"partition-return-{index}"
+            with pytest.raises(d.DomainError) as foreign:
+                with factory.begin() as db:
+                    d.create_return(db, "cust-02", "demo-order-03", "demo-item-03", quantity, "foreign", True, key, AT)
+            assert foreign.value.code == "order_not_found"
+            with factory.begin() as db:
+                request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", quantity, "partition", True, key, AT)
+                return_id = request.id
+            with pytest.raises(d.DomainError) as hijack:
+                with factory.begin() as db:
+                    d.create_return(db, "cust-02", "demo-order-03", "demo-item-03", quantity, "partition", True, key, AT)
+            assert hijack.value.code == "return_not_found"
+            if replay:
+                with factory.begin() as db:
+                    repeated = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", quantity, "partition", True, key, AT)
+                    assert repeated.id == return_id
+            with pytest.raises(d.DomainError) as overcommit:
+                with factory.begin() as db:
+                    d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 3, "overcommit", True, f"too-many-{index}", AT)
+            assert overcommit.value.code == "quantity_already_requested"
+            with factory.begin() as db:
+                d.record_receipt(db, "warehouse-test", return_id, quantity, AT + timedelta(hours=1))
+                d.record_inspection(db, "warehouse-test", return_id, True, "intact", AT + timedelta(hours=2))
+                proposal = d.create_proposal(db, return_id, AT + timedelta(hours=3))
+                d.decide_proposal(db, "supervisor-test", proposal.id, True, AT + timedelta(hours=4))
+                proposal_id = proposal.id
+            with factory.begin() as db:
+                first = d.issue_refund(db, proposal_id, f"refund:{proposal_id}", AT + timedelta(hours=5))
+                if replay:
+                    second = d.issue_refund(db, proposal_id, f"refund:{proposal_id}", AT + timedelta(hours=5))
+                    assert second.id == first.id
+            total_quantity += quantity
+            with factory() as db:
+                item = db.get(m.OrderItem, "demo-item-03")
+                ledgers = db.scalars(select(m.RefundLedger).where(m.RefundLedger.order_item_id == item.id)).all()
+                audits = db.scalars(select(m.AuditEvent).where(m.AuditEvent.action == "issue_refund")).all()
+                assert item.refunded_quantity == total_quantity
+                assert item.refunded_cents == item.paid_cents * total_quantity // item.quantity
+                assert sum(row.amount_cents for row in ledgers) == item.refunded_cents
+                assert len(ledgers) == len(audits) == index + 1
+        with factory() as db:
+            item = db.get(m.OrderItem, "demo-item-03")
+            assert item.refunded_quantity == item.quantity
+            assert item.refunded_cents == item.paid_cents
+    finally:
+        engine.dispose()

@@ -12,6 +12,7 @@ from opentelemetry.propagate import inject
 
 from .config import settings
 from .telemetry import tracer
+from .request_budget import remaining_io_seconds
 
 
 class CommerceUnavailable(RuntimeError):
@@ -29,7 +30,7 @@ async def call_read_tools(token: str, calls: list[tuple[str, dict]], url: str | 
         headers = {"Authorization": "Bearer " + token}
         inject(headers)
         try:
-            with anyio.fail_after(10):
+            with anyio.fail_after(remaining_io_seconds(10)):
                 async with create_mcp_http_client(headers=headers) as client:
                     async with streamable_http_client(url or settings.commerce_mcp_url, http_client=client) as streams:
                         async with ClientSession(*streams) as session:

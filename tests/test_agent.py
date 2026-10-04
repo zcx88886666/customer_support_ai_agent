@@ -21,6 +21,36 @@ def test_composite_dispatch_and_unreceived_limit(db):
     assert {finding["source_version"] for finding in result["findings"]} == {"1", "policy-demo-v1"}
 
 
+def test_parallel_model_branches_share_request_budget_and_handoff_safely(db, monkeypatch):
+    import httpx
+
+    calls = []
+
+    async def post(_client, url, **_kwargs):
+        calls.append(url)
+        return httpx.Response(200, request=httpx.Request("POST", url), json={
+            "choices": [{"message": {"content": '{"selected_evidence":[],"unresolved_conditions":[]}'}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 15, "cost": 0.00003}})
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-key")
+    monkeypatch.setenv("AGENT_MAX_LLM_CALLS", "1")
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    result = run_chat(db, "cust-01", ChatInput(thread_id="resource-limit", message="包裹没到能退吗", order_id="demo-order-02", agent_mode="collab"))
+    assert len(calls) == 1
+    assert result["status"] == "handoff" and result["findings"] == []
+    assert result["resource_usage"]["llm_attempts"] == 1
+    assert result["resource_usage"]["exhausted_reason"] == "llm_call_limit"
+    assert db.query(m.Ticket).count() == 1
+    assert db.query(m.ReturnRequest).count() == db.query(m.RefundLedger).count() == 0
+    assert db.get(m.ThreadState, "resource-limit").state["status"] == "handoff"
+
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    next_turn = run_chat(db, "cust-01", ChatInput(thread_id="resource-reset", message="包裹没到能退吗", order_id="demo-order-02"))
+    assert next_turn["status"] == "answered"
+    assert next_turn["resource_usage"]["llm_attempts"] == 0
+    assert next_turn["resource_usage"]["exhausted_reason"] is None
+
+
 def test_parent_uses_confirmed_language_without_changing_business_facts(db):
     set_consent(db, "cust-01", True)
     upsert_preference(db, "cust-01", "language", "English", True)

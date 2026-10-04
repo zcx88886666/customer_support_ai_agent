@@ -66,4 +66,4 @@ def check_return_eligibility(order_id: str, order_item_id: str, quantity: int = 
         return d.eligibility(db, customer_id(), order_id, order_item_id, quantity, datetime.now(timezone.utc))
 
 
-app = mcp.streamable_http_app(host=os.getenv("MCP_HOST", "127.0.0.1"))
+app = mcp.streamable_http_app(host=os.getenv("MCP_HOST", "127.0.0.1"), stateless_http=True, json_response=True)

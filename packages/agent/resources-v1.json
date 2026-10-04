@@ -1,0 +1,10 @@
+{
+  "version": "v1",
+  "max_input_token_bound": 8192,
+  "max_call_cost_usd": 0.002,
+  "technical_attempts": 2,
+  "allow_provider_fallbacks": false,
+  "model_prices_per_million": {
+    "openai/gpt-4o-mini-2024-07-18": {"input": 0.15, "output": 0.60}
+  }
+}

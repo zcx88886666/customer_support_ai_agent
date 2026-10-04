@@ -16,12 +16,16 @@ from .db import get_db, init_db
 from .config import settings
 from .checkpoint import setup_checkpointer
 from .prompts import PromptRegistry
+from .models_config import ModelRegistry
+from .request_budget import BudgetLimits
 from .telemetry import configure_telemetry, tracer, current_trace_id
 from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, PolicyDraftInput, PreferenceInput, ReceiptInput, ReturnInput, TicketAssignInput
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     PromptRegistry(settings.prompt_release)
+    ModelRegistry()
+    BudgetLimits.from_environment()
     init_db()
     setup_checkpointer()
     from .memory import setup_long_term_store

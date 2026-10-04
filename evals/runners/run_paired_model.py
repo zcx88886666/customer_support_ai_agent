@@ -50,12 +50,23 @@ class ProviderUsage:
         self.cost_missing = 0
         self.http_errors = 0
         self._original = None
+        self._async_original = None
 
     def __enter__(self):
         self._original = httpx.Client.post
+        self._async_original = httpx.AsyncClient.post
 
         def capture(client, url, *args, **kwargs):
             response = self._original(client, url, *args, **kwargs)
+            record(url, response)
+            return response
+
+        async def capture_async(client, url, *args, **kwargs):
+            response = await self._async_original(client, url, *args, **kwargs)
+            record(url, response)
+            return response
+
+        def record(url, response):
             if str(url).startswith("https://openrouter.ai/api/v1/chat/completions"):
                 with self.lock:
                     self.calls += 1
@@ -73,13 +84,14 @@ class ProviderUsage:
                         self.cost_usd += usage["cost"]
                     else:
                         self.cost_missing += 1
-            return response
 
         httpx.Client.post = capture
+        httpx.AsyncClient.post = capture_async
         return self
 
     def __exit__(self, *_exc):
         httpx.Client.post = self._original
+        httpx.AsyncClient.post = self._async_original
 
     def summary(self) -> dict:
         return {"calls": self.calls, "input_tokens": self.input_tokens, "output_tokens": self.output_tokens, "reported_cost_usd": round(self.cost_usd, 8), "cost_missing_calls": self.cost_missing, "http_errors": self.http_errors}

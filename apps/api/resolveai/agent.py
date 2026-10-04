@@ -19,6 +19,7 @@ from .config import settings
 from .policy_retrieval import retrieve
 from .commerce_client import read_order, CommerceUnavailable
 from .memory import list_preferences
+from .request_budget import BudgetExceeded, RequestBudget, budget_scope, current_budget
 
 
 class AgentState(TypedDict, total=False):
@@ -267,6 +268,7 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
 def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=None, access_token: str | None = None, language: str = "zh"):
     policy_graph = build_policy_graph(db)
     order_graph = build_order_graph(db, customer_id, access_token)
+    request_budget = current_budget() or RequestBudget()
 
     def say(zh: str, en: str) -> str:
         return en if language == "en" else zh
@@ -290,6 +292,10 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         return {"route": decision.model_dump(), "intents": intents, "bundle_id": bundle_id, "order_version": version, "status": "ready"}
 
     def dispatch(state: AgentState):
+        try:
+            timeout = min(10, request_budget.remaining_seconds())
+        except BudgetExceeded:
+            return {"status": "handoff", "answer": say("自动处理资源上限已达到，请联系人工客服。", "The automatic processing limit has been reached. Please contact a human support agent.")}
         intents = state["intents"]
         needs_order = any(x in intents for x in ("shipment_tracking", "order_status", "return_request", "refund_request", "cancel_request"))
         needs_policy = "policy_qa" in intents or "return_request" in intents
@@ -303,7 +309,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         reused = []
         for specialist, needed in (("order", needs_order), ("policy", needs_policy)):
             if needed:
-                task = DelegationTask(task_id=uuid4().hex, thread_id=state["thread_id"], plan_revision=state["plan_revision"], specialist=specialist, question_scope=state["text"][:160], verified_order_ref=state.get("order_id") if specialist == "order" else None, verified_shipment_ref=state.get("shipment_id") if specialist == "order" else None, policy_bundle_id=state["bundle_id"] if specialist == "policy" else None, evidence_version_hint=state.get("order_version"), deadline=datetime.now(timezone.utc) + timedelta(seconds=10))
+                task = DelegationTask(task_id=uuid4().hex, thread_id=state["thread_id"], plan_revision=state["plan_revision"], specialist=specialist, question_scope=state["text"][:160], verified_order_ref=state.get("order_id") if specialist == "order" else None, verified_shipment_ref=state.get("shipment_id") if specialist == "order" else None, policy_bundle_id=state["bundle_id"] if specialist == "policy" else None, evidence_version_hint=state.get("order_version"), deadline=datetime.now(timezone.utc) + timedelta(seconds=timeout))
                 tasks.append(task.model_dump(mode="json"))
                 prior = state.get("reuse_findings", {}).get(specialist)
                 if prior:
@@ -334,7 +340,8 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["deadline_expired"])
             else:
                 graph = policy_graph if task.specialist == "policy" else order_graph
-                finding = SpecialistFinding.model_validate(graph.invoke({"task": task.model_dump(mode="json")})["finding"])
+                with budget_scope(request_budget, timeout_seconds=(task.deadline - datetime.now(timezone.utc)).total_seconds()):
+                    finding = SpecialistFinding.model_validate(graph.invoke({"task": task.model_dump(mode="json")})["finding"])
                 if datetime.now(timezone.utc) > task.deadline:
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["deadline_expired"])
         return {"findings": [finding.model_dump(mode="json")]}
@@ -412,6 +419,19 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
 
 
 def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: str | None = None) -> dict:
+    with budget_scope(RequestBudget()) as budget:
+        with tracer().start_as_current_span("agent.request_resources") as span:
+            result = _run_chat(db, customer_id, body, access_token=access_token)
+            summary = budget.snapshot()
+            result["resource_usage"] = summary
+            for key in ("llm_attempts", "reported_input_tokens", "reported_output_tokens", "reported_cost_usd", "accounted_tokens", "accounted_cost_usd", "unknown_usage_calls", "elapsed_seconds"):
+                span.set_attribute("agent.resources." + key, summary[key])
+            if summary["exhausted_reason"]:
+                span.set_attribute("agent.resources.exhausted_reason", summary["exhausted_reason"])
+            return result
+
+
+def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: str | None = None) -> dict:
     thread = db.get(m.ThreadState, body.thread_id)
     if thread and thread.customer_id != customer_id:
         raise d.DomainError("thread_not_found", "Thread unavailable", 404)
@@ -468,8 +488,13 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
             translations = {"请提供订单编号。": "Please provide the order number.", "请提供要退的商品项编号。": "Please provide the order item you want to return.", "请提供退货数量。": "Please provide the quantity to return.", "请提供退货原因。": "Please provide the reason for the return.", "请明确确认订单、商品、数量、原因并提交退货申请。": "Please explicitly confirm the order, item, quantity, and reason before submitting the return request.", "请使用提交按钮生成幂等请求编号。": "Please use the submit button to generate a unique request key."}
             result = {"status": "clarify", "answer": say(missing[1], translations[missing[1]]), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
         else:
-            request = d.create_return(db, customer_id, order_id, item_id, quantity, reason, True, body.idempotency_key, now, revision)
-            result = {"status": "return_requested", "answer": say("退货申请已提交，尚未退款。", "Your return request was submitted. No refund has been issued."), "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+            try:
+                current_budget().remaining_seconds()
+            except BudgetExceeded:
+                result = {"status": "handoff", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+            else:
+                request = d.create_return(db, customer_id, order_id, item_id, quantity, reason, True, body.idempotency_key, now, revision)
+                result = {"status": "return_requested", "answer": say("退货申请已提交，尚未退款。", "Your return request was submitted. No refund has been issued."), "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     else:
         from .checkpoint import parent_checkpointer
         replan_count = 0
@@ -490,6 +515,11 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
             reuse_findings = {tasks_by_id[finding["task_id"]]: finding for finding in state.get("findings", []) if finding.get("status") == "ok" and finding.get("task_id") in tasks_by_id and tasks_by_id[finding["task_id"]] in keep}
             db.expire_all()
             revision += 1
+    if result["status"] != "return_requested":
+        try:
+            current_budget().remaining_seconds()
+        except BudgetExceeded:
+            result = {"status": "handoff", "answer": say("自动处理资源上限已达到，请联系人工客服。", "The automatic processing limit has been reached. Please contact a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": [], "agent_mode": body.agent_mode, "replan_count": result.get("replan_count", 0)}
     if result["status"] == "clarify" and (int(old.get("clarifications", 0)) >= 2 or (decision.intents == ["unknown"] and int(old.get("unknown_clarifications", 0)) >= 1)):
         result = {"status": "handoff", "answer": say("已达到澄清轮次上限，请联系人工客服。", "The clarification limit has been reached. Please contact a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     if result["status"] == "handoff":

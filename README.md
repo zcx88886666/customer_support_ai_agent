@@ -89,6 +89,7 @@ The same report documents an API process-restart replay and a fresh-database fai
 .venv/bin/pytest -q
 .venv/bin/python evals/runners/run_smoke.py
 .venv/bin/python evals/runners/run_business.py
+.venv/bin/python evals/runners/run_core_business.py
 cd apps/web && npm run build
 ```
 
@@ -106,6 +107,8 @@ Use `--suite single_domain` with either mode to check 20 paired order-only or po
 Run `.venv/bin/python evals/runners/run_collaboration_faults.py` for twelve paired test-only specialist error, incomplete, conflict, forged-evidence, and late-result injections. It uses isolated mock-auth HTTP replays and no provider key. The [fault report](docs/implementation/collaboration-faults-2026-10-04.md) records the results and the public-finding safety fix.
 
 The original [business workflow report](docs/implementation/business-eval-2026-10-03.md) records four cross-role HTTP and controlled-worker cases on isolated SQLite databases with terminal-state gold. The current runner uses the six-case v2 dataset. Run it with `AUTH_MODE=mock`; these synthetic cases are a development gate while the human-reviewed locked suite remains open.
+
+The [core business development slice](docs/implementation/core-business-slice-2026-10-04.md) runs one customer Agent return turn, then warehouse receipt/inspection, supervisor approval, and the controlled worker against the same isolated SQLite database. It checks the chat-created return, zero early refund, final ledger/audit, and idempotent replay. Its `development_pass` is a local check; `v6_minimum_cases_met` and `release_gate_pass` remain false until broader cases and independent review exist.
 
 The [v2 business suite and mutation measurement](docs/implementation/business-mutation-2026-10-03.md) add explicit denial cases for missing confirmation and expired return windows. The v2 runner passed six cases; `AUTH_MODE=mock .venv/bin/python evals/runners/run_business_mutations.py` detected nine named application faults against those cases. The v1 JSONL remains as a historical development fixture.
 

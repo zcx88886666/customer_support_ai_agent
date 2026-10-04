@@ -71,11 +71,11 @@ def execute(client: TestClient | None, case: dict, run_id: str, *, post_request=
         create("foreign_return_refused", "foreign attempt", case["case_id"])
         return statuses, observations
 
-    first = create("create_return", "synthetic return", case["case_id"])
+    first = create("create_return", fixture.get("reason", "synthetic return"), case["case_id"])
     return_id = first["id"]
     observations["return_id"] = return_id
     if case["scenario"] == "approved_refund":
-        retry = create("repeat_return", "synthetic return", case["case_id"])
+        retry = create("repeat_return", fixture.get("reason", "synthetic return"), case["case_id"])
         observations["same_return_on_retry"] = retry["id"] == return_id
     post("receipt", f"/warehouse/returns/{return_id}/receipt", "warehouse", "warehouse-test", {"quantity": 1})
     if case["scenario"] == "inspection_exception":

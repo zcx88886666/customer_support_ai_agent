@@ -46,6 +46,20 @@ def load_cases() -> list[dict]:
     return cases
 
 
+def score_chat_phase(case: dict, chat_rows: list[dict], chat_return_ids: list[str],
+                     chat_ledger_count: int, observations: dict) -> dict[str, bool]:
+    payload = chat_rows[-1]["payload"]
+    return {
+        "chat_http_status": all(row["http_status"] == 200 for row in chat_rows),
+        "chat_status": payload.get("status") == case["gold"]["chat_status"],
+        "chat_route": payload.get("route", {}).get("route") == case["gold"]["chat_route"],
+        "chat_committed_return": len(chat_return_ids) == case["gold"]["chat_return_count"]
+            and payload.get("return_id") in chat_return_ids
+            and observations.get("return_id") == payload.get("return_id"),
+        "chat_no_early_refund": chat_ledger_count == case["gold"]["chat_ledger_count"],
+    }
+
+
 def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
     with tempfile.TemporaryDirectory(prefix="resolveai-core-business-") as temp:
         engine = make_engine(f"sqlite:///{Path(temp) / 'case.db'}")
@@ -84,15 +98,7 @@ def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
                 checks = run_business.score(terminal_case, statuses, observations, db)
             last_chat = chat_rows[-1]
             payload = last_chat["payload"]
-            checks.update({
-                "chat_http_status": all(row["http_status"] == 200 for row in chat_rows),
-                "chat_status": payload.get("status") == case["gold"]["chat_status"],
-                "chat_route": payload.get("route", {}).get("route") == case["gold"]["chat_route"],
-                "chat_committed_return": len(chat_return_ids) == case["gold"]["chat_return_count"]
-                    and payload.get("return_id") in chat_return_ids
-                    and observations.get("return_id") == payload.get("return_id"),
-                "chat_no_early_refund": chat_ledger_count == case["gold"]["chat_ledger_count"],
-            })
+            checks.update(score_chat_phase(case, chat_rows, chat_return_ids, chat_ledger_count, observations))
             return {"case_id": case["case_id"], "split": case["split"], "risk_tier": case["risk_tier"],
                     "status": "pass" if all(checks.values()) else "fail", "checks": checks,
                     "chat_status": payload.get("status"), "http_statuses": statuses,

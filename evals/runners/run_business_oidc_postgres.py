@@ -27,9 +27,10 @@ from resolveai.prompts import ROOT
 from resolveai.seed import seed_demo
 
 if __package__:
-    from . import run_business
+    from . import run_business, run_core_business
 else:
     import run_business
+    import run_core_business
 
 
 def database_url(admin_url: str, name: str, sqlalchemy: bool = False) -> str:
@@ -97,6 +98,8 @@ def load_oidc_tokens() -> dict[str, str]:
 
 
 def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[str, str], report_dir: Path, restart_before_decision: bool = False, langfuse_outage: bool = False, kill_at_checkpoint: str | None = None) -> dict:
+    core_case = case.get("suite") == "core_business_dev_v1"
+    terminal_case = {**case, "scenario": case["terminal_scenario"]} if core_case else case
     name = "ra_biz_oidc_" + run_id[:15].lower().replace("t", "_").replace("z", "") + "_" + run_id[-6:] + "_" + str(index)
     with psycopg.connect(admin_url, autocommit=True) as conn:
         conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
@@ -108,7 +111,7 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
     try:
         with factory.begin() as db:
             seed_demo(db, datetime.now(timezone.utc))
-        if case["scenario"] == "expired_window":
+        if terminal_case["scenario"] == "expired_window":
             with factory.begin() as db:
                 shipment = db.scalar(select(m.Shipment).where(m.Shipment.order_id == case["fixture"]["order_id"]))
                 shipment.delivered_at = datetime.now(timezone.utc) - timedelta(days=20)
@@ -167,9 +170,28 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                         result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, check=True, capture_output=True, text=True, timeout=30)
                         return json.loads(result.stdout.strip())
 
-                    statuses, observations = run_business.execute(None, case, run_id, post_request=post, issue_worker=issue_worker)
+                    chat_rows = []
+                    chat_return_ids: list[str] = []
+                    chat_ledger_count = 0
+                    if core_case:
+                        for turn in case["dialogue_script"]:
+                            chat_response = client.post(
+                                "/chat",
+                                json={**turn, "thread_id": case["case_id"], "order_id": case["fixture"]["order_id"],
+                                      "idempotency_key": case["case_id"], "agent_mode": "single"},
+                                headers={"Authorization": "Bearer " + token_by_role["customer"],
+                                         "x-eval-run-id": run_id, "x-eval-case-id": case["case_id"]},
+                            )
+                            chat_rows.append({"http_status": chat_response.status_code, "payload": chat_response.json(),
+                                              "trace_id": chat_response.headers.get("x-trace-id")})
+                        with factory() as db:
+                            chat_return_ids = [row.id for row in db.scalars(select(m.ReturnRequest)).all()]
+                            chat_ledger_count = len(db.scalars(select(m.RefundLedger)).all())
+                    statuses, observations = run_business.execute(None, terminal_case, run_id, post_request=post, issue_worker=issue_worker)
                 with factory() as db:
-                    checks = run_business.score(case, statuses, observations, db)
+                    checks = run_business.score(terminal_case, statuses, observations, db)
+                    if core_case:
+                        checks.update(run_core_business.score_chat_phase(case, chat_rows, chat_return_ids, chat_ledger_count, observations))
                     if kill_at_checkpoint:
                         from langgraph.checkpoint.postgres import PostgresSaver
                         from resolveai.approval_checkpoint import _config, build_approval_graph
@@ -192,7 +214,7 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                     time.sleep(6)
                 else:
                     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                return {"case_id": case["case_id"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "api_restarted_before_decision": restarted, "kill_at_checkpoint": kill_at_checkpoint, "latency_ms": elapsed_ms}
+                return {"case_id": case["case_id"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "api_restarted_before_decision": restarted, "kill_at_checkpoint": kill_at_checkpoint, "latency_ms": elapsed_ms, "chat_trace_ids": [row["trace_id"] for row in chat_rows]}
             finally:
                 process.terminate()
                 try:
@@ -206,6 +228,7 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--core", action="store_true", help="Replay the conversational core-business development suite")
     parser.add_argument("--case-id", help="Run one development case for integration diagnosis")
     parser.add_argument("--restart-before-decision", action="store_true", help="Restart the isolated API after proposal and before supervisor decision")
     parser.add_argument("--langfuse-outage", action="store_true", help="Enable Langfuse export to a closed local port during the business replay")
@@ -215,7 +238,9 @@ def main() -> None:
     parts = urlsplit(admin_url)
     if parts.scheme != "postgresql" or parts.path != "/postgres" or not parts.hostname:
         raise RuntimeError("BUSINESS_PG_ADMIN_URL must be a PostgreSQL admin connection to /postgres")
-    cases = run_business.load_cases()
+    if args.core and (args.restart_before_decision or args.langfuse_outage or args.kill_at_checkpoint):
+        raise RuntimeError("--core cannot be combined with fault-injection options")
+    cases = run_core_business.load_cases() if args.core else run_business.load_cases()
     if args.case_id:
         cases = [case for case in cases if case["case_id"] == args.case_id]
         if not cases:
@@ -241,12 +266,14 @@ def main() -> None:
             result = {"case_id": case["case_id"], "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)[:180]}
         results.append(result)
         print(f"{case['case_id']}: {result['status']}", flush=True)
-    summary = {"run_id": run_id, "suite": "business_workflows_v2_oidc_postgres", "cases": len(results), "pass": sum(row["status"] == "pass" for row in results), "fail": sum(row["status"] == "fail" for row in results), "incomplete": sum(row["status"] == "incomplete" for row in results), "gate_pass": all(row["status"] == "pass" for row in results), "api_restart_requested": args.restart_before_decision, "langfuse_outage_requested": args.langfuse_outage, "kill_at_checkpoint": args.kill_at_checkpoint, "report": str(report_dir)}
-    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(run_business.DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "api_restart_before_decision": args.restart_before_decision, "langfuse_outage": args.langfuse_outage, "kill_at_checkpoint": args.kill_at_checkpoint, "model": "none"}, indent=2) + "\n", encoding="utf-8")
+    passed = all(row["status"] == "pass" for row in results)
+    summary = {"run_id": run_id, "suite": "core_business_dev_v1_oidc_postgres" if args.core else "business_workflows_v2_oidc_postgres", "cases": len(results), "pass": sum(row["status"] == "pass" for row in results), "fail": sum(row["status"] == "fail" for row in results), "incomplete": sum(row["status"] == "incomplete" for row in results), "development_pass": passed, "gate_pass": passed if not args.core else False, "v6_minimum_cases_met": len(results) >= 30 if args.core else None, "release_gate_pass": False if args.core else None, "api_restart_requested": args.restart_before_decision, "langfuse_outage_requested": args.langfuse_outage, "kill_at_checkpoint": args.kill_at_checkpoint, "report": str(report_dir)}
+    dataset = run_core_business.DATASET if args.core else run_business.DATASET
+    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "api_restart_before_decision": args.restart_before_decision, "langfuse_outage": args.langfuse_outage, "kill_at_checkpoint": args.kill_at_checkpoint, "model": "deterministic-mock" if args.core else "none"}, indent=2) + "\n", encoding="utf-8")
     (report_dir / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (report_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary))
-    raise SystemExit(0 if summary["gate_pass"] else 1)
+    raise SystemExit(0 if passed else 1)
 
 
 if __name__ == "__main__":

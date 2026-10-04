@@ -38,9 +38,12 @@ def database_url(admin_url: str, name: str, sqlalchemy: bool = False) -> str:
     return urlunsplit((scheme, parts.netloc, "/" + name, "", ""))
 
 
-def process_env(db_url: str) -> dict[str, str]:
+def process_env(db_url: str, langfuse_outage: bool = False) -> dict[str, str]:
     env = os.environ.copy()
     env.update({"DATABASE_URL": db_url, "AUTH_MODE": "oidc", "LONG_TERM_MEMORY_MODE": "postgres_store", "OPENROUTER_API_KEY": "", "LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": "", "OTEL_EXPORTER_OTLP_ENDPOINT": "", "OTEL_METRICS_EXPORTER": "none"})
+    if langfuse_outage:
+        # Explicitly enable the exporter against a closed local port; no real key is used.
+        env.update({"LANGFUSE_PUBLIC_KEY": "pk-lf-offline-test", "LANGFUSE_SECRET_KEY": "sk-lf-offline-test", "LANGFUSE_BASE_URL": "http://127.0.0.1:9", "LANGFUSE_SAMPLE_RATE": "1"})
     return env
 
 
@@ -73,12 +76,12 @@ def load_oidc_tokens() -> dict[str, str]:
     return {name: login(name, accounts[name]["password"]) for name in ("customer-one", "customer-two", "warehouse-demo", "supervisor-demo")}
 
 
-def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[str, str], report_dir: Path, restart_before_decision: bool = False) -> dict:
+def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[str, str], report_dir: Path, restart_before_decision: bool = False, langfuse_outage: bool = False) -> dict:
     name = "ra_biz_oidc_" + run_id[:15].lower().replace("t", "_").replace("z", "") + "_" + run_id[-6:] + "_" + str(index)
     with psycopg.connect(admin_url, autocommit=True) as conn:
         conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     db_url = database_url(admin_url, name, sqlalchemy=True)
-    env = process_env(db_url)
+    env = process_env(db_url, langfuse_outage)
     subprocess.run([str(Path(sys.executable).with_name("alembic")), "upgrade", "head"], cwd=ROOT, env=env, check=True, stdout=subprocess.DEVNULL)
     engine = make_engine(db_url)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -121,7 +124,16 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                     checks = run_business.score(case, statuses, observations, db)
                 if restart_before_decision:
                     checks["api_restarted_before_decision"] = restarted
-                return {"case_id": case["case_id"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "api_restarted_before_decision": restarted, "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
+                if langfuse_outage:
+                    with socket.socket() as probe:
+                        probe.settimeout(1)
+                        checks["cloud_endpoint_unreachable"] = probe.connect_ex(("127.0.0.1", 9)) != 0
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    # Give the batch exporter time to attempt an upload before shutdown.
+                    time.sleep(6)
+                else:
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                return {"case_id": case["case_id"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "api_restarted_before_decision": restarted, "latency_ms": elapsed_ms}
             finally:
                 process.terminate()
                 try:
@@ -137,6 +149,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case-id", help="Run one development case for integration diagnosis")
     parser.add_argument("--restart-before-decision", action="store_true", help="Restart the isolated API after proposal and before supervisor decision")
+    parser.add_argument("--langfuse-outage", action="store_true", help="Enable Langfuse export to a closed local port during the business replay")
     args = parser.parse_args()
     admin_url = os.environ.get("BUSINESS_PG_ADMIN_URL", "")
     parts = urlsplit(admin_url)
@@ -149,6 +162,11 @@ def main() -> None:
             raise RuntimeError("Unknown business case ID")
     if args.restart_before_decision and [case["case_id"] for case in cases] != ["business-approved-refund"]:
         raise RuntimeError("--restart-before-decision requires --case-id business-approved-refund")
+    if args.langfuse_outage:
+        with socket.socket() as probe:
+            probe.settimeout(1)
+            if probe.connect_ex(("127.0.0.1", 9)) == 0:
+                raise RuntimeError("Outage target port 9 is unexpectedly reachable")
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-oidc-" + uuid4().hex[:6]
     report_dir = ROOT / "evals/reports" / run_id
     report_dir.mkdir(parents=True, exist_ok=False)
@@ -156,13 +174,13 @@ def main() -> None:
     results = []
     for index, case in enumerate(cases, start=1):
         try:
-            result = run_case(case, run_id, index, admin_url, tokens, report_dir, args.restart_before_decision)
+            result = run_case(case, run_id, index, admin_url, tokens, report_dir, args.restart_before_decision, args.langfuse_outage)
         except Exception as exc:
             result = {"case_id": case["case_id"], "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)[:180]}
         results.append(result)
         print(f"{case['case_id']}: {result['status']}", flush=True)
-    summary = {"run_id": run_id, "suite": "business_workflows_v2_oidc_postgres", "cases": len(results), "pass": sum(row["status"] == "pass" for row in results), "fail": sum(row["status"] == "fail" for row in results), "incomplete": sum(row["status"] == "incomplete" for row in results), "gate_pass": all(row["status"] == "pass" for row in results), "api_restart_requested": args.restart_before_decision, "report": str(report_dir)}
-    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(run_business.DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "api_restart_before_decision": args.restart_before_decision, "model": "none"}, indent=2) + "\n", encoding="utf-8")
+    summary = {"run_id": run_id, "suite": "business_workflows_v2_oidc_postgres", "cases": len(results), "pass": sum(row["status"] == "pass" for row in results), "fail": sum(row["status"] == "fail" for row in results), "incomplete": sum(row["status"] == "incomplete" for row in results), "gate_pass": all(row["status"] == "pass" for row in results), "api_restart_requested": args.restart_before_decision, "langfuse_outage_requested": args.langfuse_outage, "report": str(report_dir)}
+    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(run_business.DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "api_restart_before_decision": args.restart_before_decision, "langfuse_outage": args.langfuse_outage, "model": "none"}, indent=2) + "\n", encoding="utf-8")
     (report_dir / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (report_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary))

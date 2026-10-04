@@ -54,6 +54,9 @@ def classify(text: str) -> RouteDecision:
     policy_question = any(term in lower for term in ("政策", "规则", "七天", "七日", "policy", "eligible"))
     shipment_question = any(term in lower for term in ("包裹", "物流", "配送", "shipment", "delivery"))
     high_risk_word = any(term in lower for term in ("退款", "refund", "取消", "cancel", "投诉", "complaint"))
+    refund_policy_inquiry = (shipment_question and policy_question
+                             and any(term in lower for term in ("退款规则", "退款政策", "退款审批政策", "refund policy", "refund rules"))
+                             and not any(term in lower for term in ("我要退款", "请退款", "帮我退款", "给我退款", "马上退款", "立即退款", "执行退款", "issue refund", "refund me")))
     if lower.strip(" ！!。.，,？?") in {"你好", "您好", "hello", "hi"}:
         return RouteDecision(route="knowledge", intents=[])
     if any(term in lower for term in ("人工", "真人客服", "human agent")):
@@ -71,7 +74,7 @@ def classify(text: str) -> RouteDecision:
     if model_configured():
         try:
             candidate = call_structured("intent", {"message": text[:1000]}, RouteDecision, settings.prompt_release)
-            if any(term in lower for term in ("退款", "refund")) and "refund_request" not in candidate.intents:
+            if any(term in lower for term in ("退款", "refund")) and "refund_request" not in candidate.intents and not refund_policy_inquiry:
                 return RouteDecision(route="human_handoff", intents=["refund_request"], uncertainty="high_risk_intent_conflict")
             if any(term in lower for term in ("取消", "cancel")) and "cancel_request" not in candidate.intents:
                 return RouteDecision(route="human_handoff", intents=["cancel_request"], uncertainty="high_risk_intent_conflict")
@@ -84,8 +87,6 @@ def classify(text: str) -> RouteDecision:
                 intents = [intent for intent in intents if intent != "return_request"]
                 if policy_question and "policy_qa" not in intents:
                     intents.append("policy_qa")
-            if not intents:
-                return RouteDecision(route="clarify", intents=["unknown"], uncertainty="unverified_action")
             if "refund_request" in intents and not policy_question:
                 intents = [intent for intent in intents if intent != "policy_qa"]
             if "cancel_request" in intents:
@@ -96,9 +97,20 @@ def classify(text: str) -> RouteDecision:
                 intents = [intent for intent in intents if intent != "order_status"]
                 if "shipment_tracking" not in intents:
                     intents.append("shipment_tracking")
+            if shipment_question and policy_question and not return_action and not any(intent in intents for intent in ("cancel_request", "complaint")):
+                # Explicitly mixed read questions need both verified sources even
+                # when the model labels only one. Keep a refund intent if present.
+                intents = [intent for intent in intents if intent not in ("order_status", "unknown")]
+                for intent in ("shipment_tracking", "policy_qa"):
+                    if intent not in intents:
+                        intents.append(intent)
+            if not intents:
+                return RouteDecision(route="clarify", intents=["unknown"], uncertainty="unverified_action")
             if candidate.route in {"clarify", "out_of_scope"} and shipment_question and not high_risk_word and not return_action:
                 return RouteDecision(route="knowledge", intents=["shipment_tracking"] + (["policy_qa"] if policy_question else []))
-            candidate = candidate.model_copy(update={"intents": intents})
+            candidate = candidate.model_copy(update={"intents": intents[:3]})
+            if refund_policy_inquiry:
+                return candidate.model_copy(update={"route": "after_sales"})
             if any(intent in intents for intent in ("return_request", "refund_request", "cancel_request", "complaint")) and candidate.route == "knowledge":
                 candidate = candidate.model_copy(update={"route": "after_sales"})
             if candidate.intents and set(candidate.intents) <= {"shipment_tracking", "order_status", "policy_qa"}:
@@ -132,7 +144,7 @@ def classify(text: str) -> RouteDecision:
 
 def safe_scope(text: str) -> str:
     """Only keep task keywords in graph checkpoints and delegation contracts."""
-    terms = ("包裹", "没到", "能退", "可以退", "退吗", "我要退", "物流", "配送", "政策", "七天", "七日", "无理由", "订单", "退货", "退款", "投诉", "取消", "签收", "shipment", "delivery", "return", "refund", "policy", "order")
+    terms = ("包裹", "没到", "能退", "可以退", "退吗", "我要退", "物流", "配送", "政策", "规则", "七天", "七日", "无理由", "订单", "退货", "退款", "投诉", "取消", "签收", "仓库", "质检", "例外", "商品", "实付", "审批", "shipment", "delivery", "return", "refund", "policy", "order", "warehouse", "inspection")
     return " ".join(term for term in terms if term.lower() in text.lower())[:160]
 
 
@@ -352,7 +364,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
                 pieces.append(say(f"适用条款：{refs}。签收后的申请期限由该政策包确定。", f"Relevant policy clauses: {', '.join(finding.source_ids)}. The applicable policy bundle determines the request window after delivery."))
         if len(validated) < len(state.get("tasks", [])):
             pieces.append(say("部分证据未核实，退货资格和退款需人工复核。", "Some evidence could not be verified. A human must review return eligibility and any refund."))
-        if "refund_request" in state["intents"]:
+        if "refund_request" in state["intents"] or ("退款" in state["text"] and any(term in state["text"] for term in ("政策", "规则"))) or ("refund" in state["text"] and "policy" in state["text"]):
             pieces.append(say("退款须待仓库质检、服务端提案及主管批准后才能执行。", "A refund requires warehouse inspection, a server-side proposal, and supervisor approval before it can be issued."))
         if "cancel_request" in state["intents"]:
             pieces.append(say("取消订单请联系人工客服。", "Please contact a human support agent to request an order cancellation."))

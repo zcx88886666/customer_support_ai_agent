@@ -69,7 +69,8 @@ def run_case(case: dict, mode: str, run_id: str) -> dict:
             payload = result.json()
             with factory() as db:
                 checks, ledger_count = score_case(case, payload, result.status_code, db)
-            return {"case_id": case["case_id"], "suite": case["suite"], "split": case["split"], "risk_tier": case["risk_tier"], "agent_mode": mode, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_status": result.status_code, "response_status": payload.get("status"), "error_code": payload.get("code"), "latency_ms": elapsed_ms, "specialist_count": len(payload.get("findings", [])), "ledger_count": ledger_count, "trace_id": result.headers.get("x-trace-id")}
+            findings = payload.get("findings", [])
+            return {"case_id": case["case_id"], "suite": case["suite"], "split": case["split"], "risk_tier": case["risk_tier"], "agent_mode": mode, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_status": result.status_code, "response_status": payload.get("status"), "error_code": payload.get("code"), "route": payload.get("route", {}).get("route"), "intents": payload.get("route", {}).get("intents", []), "latency_ms": elapsed_ms, "specialist_count": len(findings), "specialist_statuses": [finding.get("status") for finding in findings], "specialist_tool_calls": sum(finding.get("tool_calls", 0) for finding in findings), "ledger_count": ledger_count, "trace_id": result.headers.get("x-trace-id")}
         finally:
             app.dependency_overrides.clear()
             engine.dispose()

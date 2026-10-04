@@ -117,6 +117,42 @@ def test_model_read_only_and_high_risk_routes_are_normalized(monkeypatch):
     assert classify("delivery update").intents == ["shipment_tracking"]
 
 
+def test_model_keeps_both_explicit_read_domains_in_mixed_questions(monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["policy_qa"]))
+    read_only = classify("订单配送和七日退货规则")
+    assert read_only.route == "knowledge"
+    assert set(read_only.intents) == {"shipment_tracking", "policy_qa"}
+
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="after_sales", intents=["shipment_tracking", "refund_request"]))
+    refund = classify("包裹物流和退款规则")
+    assert refund.route == "after_sales"
+    assert set(refund.intents) == {"shipment_tracking", "refund_request", "policy_qa"}
+
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["policy_qa"]))
+    policy_only = classify("查物流和退款政策")
+    assert policy_only.route == "after_sales"
+    assert set(policy_only.intents) == {"shipment_tracking", "policy_qa"}
+    assert classify("查物流和退款政策，请立即退款").route == "human_handoff"
+
+
+def test_refund_policy_inquiry_explains_approval_without_a_refund_request(db, monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision, SpecialistReview
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda task, *args: RouteDecision(route="knowledge", intents=["policy_qa"]) if task == "intent" else SpecialistReview(selected_evidence=[], unresolved_conditions=[]))
+    result = run_chat(db, "cust-01", ChatInput(thread_id="refund-policy-read-only", message="查物流和退款政策", order_id="demo-order-01", agent_mode="collab"))
+    assert result["status"] == "answered"
+    assert result["route"]["route"] == "after_sales"
+    assert {finding["source_version"] for finding in result["findings"]} == {"1", "policy-demo-v1"}
+    assert "主管批准" in result["answer"]
+    assert db.query(m.RefundLedger).count() == 0
+
+
 def test_model_cannot_silently_drop_explicit_high_risk_action(monkeypatch):
     from resolveai import agent
     from resolveai.schemas import RouteDecision

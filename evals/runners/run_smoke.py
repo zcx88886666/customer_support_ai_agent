@@ -37,7 +37,7 @@ def load_cases() -> list[dict]:
     if len(ids) != len(set(ids)) or len(cases) != 30:
         raise ValueError("smoke_demo requires 30 unique cases")
     for case in cases:
-        if case["schema_version"] != "v1" or not case.get("gold") or not case.get("dialogue_script"):
+        if case["schema_version"] != "v1" or case["split"] != "dev" or not case.get("gold") or not case.get("dialogue_script"):
             raise ValueError(f"Invalid case {case.get('case_id')}")
     return cases
 

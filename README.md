@@ -90,6 +90,8 @@ The smoke runner validates 25 fixed JSONL cases and runs the collaboration cases
 
 The separate [business workflow runner](docs/implementation/business-eval-2026-10-03.md) replays four cross-role HTTP and controlled-worker cases on isolated SQLite databases with a terminal-state JSONL gold and local report. Run it with `AUTH_MODE=mock`; it is a development gate while real-OIDC PostgreSQL replay and human-reviewed locked cases remain open.
 
+When an OpenRouter key is already configured, `.venv/bin/python evals/runners/run_paired_model.py` runs the three synthetic composite smoke cases in single and collaborative modes using the configured GPT-4o-mini model. The [measured development report](docs/implementation/paired-model-2026-10-03.md) gives provider-reported usage and cost; it is a small comparison rather than a locked quality benchmark.
+
 To regenerate and independently validate large synthetic CSV worlds:
 
 ```bash

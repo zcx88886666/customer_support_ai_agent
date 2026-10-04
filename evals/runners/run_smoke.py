@@ -22,7 +22,10 @@ from resolveai.db import Base, get_db, make_engine
 from resolveai.prompts import PromptRegistry, ROOT
 from resolveai.seed import seed_demo
 from resolveai.telemetry import score as cloud_score
-from score import score_case
+if __package__:
+    from .score import score_case
+else:
+    from score import score_case
 
 
 DATASET = ROOT / "evals/datasets/smoke_demo.jsonl"

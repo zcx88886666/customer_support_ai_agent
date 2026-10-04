@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 
 from resolveai.api import app
@@ -49,6 +49,9 @@ def test_support_only_sees_assigned_ticket(session_factory):
 
 
 def test_http_return_to_approved_single_refund(session_factory, monkeypatch):
+    with session_factory.begin() as db:
+        db.get(m.Shipment, "demo-shipment-01").delivered_at = datetime.now(timezone.utc) - timedelta(days=2)
+
     def override_db():
         with session_factory() as db:
             yield db

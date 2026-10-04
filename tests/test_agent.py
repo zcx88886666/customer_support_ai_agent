@@ -325,6 +325,8 @@ def test_model_evidence_review_uses_only_verified_aliases(monkeypatch):
 
 
 def test_return_slots_continue_across_turns_but_confirmation_is_current(db):
+    db.get(m.Shipment, "demo-shipment-01").delivered_at = datetime.now(timezone.utc) - timedelta(days=2)
+    db.flush()
     first = run_chat(db, "cust-01", ChatInput(thread_id="return-thread", message="我要退这件商品", order_id="demo-order-01"))
     assert first["status"] == "clarify" and "商品项编号" in first["answer"]
     second = run_chat(db, "cust-01", ChatInput(thread_id="return-thread", message="这件", item_id="demo-item-01"))

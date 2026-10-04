@@ -34,6 +34,8 @@ PostgreSQL startup also builds the active policy's version-scoped full-text and 
 
 A supervisor can restore a superseded policy through `POST /policies/{bundle_id}/rollback`. The service checks its content hash and search index before switching the active bundle and records an audit event. The [rollback report](docs/implementation/policy-rollback-2026-10-02.md) covers the migrated demo bundle and measured checks.
 
+An optional [offline embedding benchmark](docs/implementation/policy-embedding-2026-10-03.md) compares the current character-gram retrieval with two local FastEmbed models. Install `fastembed==0.8.1` in a separate virtual environment, then run `FASTEMBED_PYTHON=/path/to/fastembed-venv/bin/python HF_HOME=/path/to/model-cache .venv/bin/python evals/runners/run_policy_embedding.py`. The semantic candidates are experimental and are not part of the API runtime.
+
 ## Ubuntu setup and no-key mock run
 
 Tested here with Python 3.12.3. Ubuntu 24.04 with Python 3.12, `uv`, and Node 22 is the intended local setup. The following SQLite commands provide a quick mock fallback without PostgreSQL or Docker:

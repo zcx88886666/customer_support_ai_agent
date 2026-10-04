@@ -93,6 +93,7 @@ def main() -> None:
     load_local_key()
     registry = PromptRegistry("release-v1")
     model_id = ModelRegistry().get("intent").model
+    seed_clock = datetime.now(timezone.utc)
     cases = [case for case in load_cases() if "collaboration" in case.get("tags", []) or (args.scope == "development" and case["case_id"] in {"smoke-01", "smoke-02", "smoke-10", "smoke-11", "smoke-16", "smoke-17", "smoke-20", "smoke-24"})]
     assert len(cases) == (3 if args.scope == "composite" else 11)
     rng = random.Random(args.seed)
@@ -108,7 +109,7 @@ def main() -> None:
             execution_order.append({"case_id": case["case_id"], "agent_mode": mode})
             with ProviderUsage() as meter:
                 try:
-                    result = run_case(case, mode, run_id)
+                    result = run_case(case, mode, run_id, seed_clock)
                 except Exception as exc:
                     result = {"case_id": case["case_id"], "agent_mode": mode, "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)}
             result["provider_usage"] = meter.summary()
@@ -128,7 +129,7 @@ def main() -> None:
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "pairs.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in pairs), encoding="utf-8")
     (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "scope": args.scope, "execution_order_seed": args.seed, "execution_order": execution_order, "prompt_release_id": "release-v1", "prompt_hashes": registry.manifest["prompts"], "model": model_id, "scorer_version": "smoke-v2", "auth_mode": "mock", "database": "isolated-sqlite-per-execution"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "scope": args.scope, "execution_order_seed": args.seed, "execution_order": execution_order, "seed_clock": seed_clock.isoformat(), "prompt_release_id": "release-v1", "prompt_hashes": registry.manifest["prompts"], "model": model_id, "scorer_version": "smoke-v2", "auth_mode": "mock", "database": "isolated-sqlite-per-execution"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     rows = ["<html><meta charset='utf-8'><title>ResolveAI paired model report</title><body>", f"<h1>Run {html.escape(run_id)}</h1>", f"<p>{len(cases)} paired synthetic cases on {html.escape(model_id)}.</p>", "<table border='1'><tr><th>Case</th><th>Single</th><th>Collab</th><th>Outcome</th></tr>"]
     for pair in pairs:

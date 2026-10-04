@@ -6,6 +6,8 @@ The mock report `evals/reports/20261004T093726Z-collab-single-domain-mock-bf27ab
 
 The prompts, labels, and seeded demo orders are synthetic development material. Some policy questions share wording and source clauses. The set has not been independently reviewed or split into a locked test group, so the pass rate is a regression result rather than a production accuracy estimate. The current `single` path executes the same read-only specialist logic sequentially, while `collab` fans out the tasks; this comparison does not test a separate model's reasoning quality.
 
+The runner now captures one `seed_clock` for every database in a paired run. The post-change mock report `evals/reports/20261004T095852Z-collab-single-domain-mock-620cd5/` passed 40/40 and every case row matched the manifest clock. The earlier live run predates this change; its result remains a development measurement, but it did not use one exact seed timestamp. The application wall clock is not frozen.
+
 ```bash
 .venv/bin/python evals/runners/run_collaboration.py --suite single_domain --mode mock
 .venv/bin/python evals/runners/run_collaboration.py --suite single_domain --mode live

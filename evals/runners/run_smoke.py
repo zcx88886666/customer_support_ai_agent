@@ -42,13 +42,14 @@ def load_cases() -> list[dict]:
     return cases
 
 
-def run_case(case: dict, mode: str, run_id: str) -> dict:
+def run_case(case: dict, mode: str, run_id: str, seed_clock: datetime | None = None) -> dict:
+    seed_clock = seed_clock or datetime.now(timezone.utc)
     with tempfile.TemporaryDirectory(prefix="resolveai-eval-") as temp:
         engine = make_engine(f"sqlite:///{Path(temp) / 'case.db'}")
         Base.metadata.create_all(engine)
         factory = sessionmaker(engine, expire_on_commit=False)
         with factory.begin() as db:
-            seed_demo(db, datetime.now(timezone.utc))
+            seed_demo(db, seed_clock)
 
         def override_db():
             with factory() as db:
@@ -70,7 +71,7 @@ def run_case(case: dict, mode: str, run_id: str) -> dict:
             with factory() as db:
                 checks, ledger_count = score_case(case, payload, result.status_code, db)
             findings = payload.get("findings", [])
-            return {"case_id": case["case_id"], "suite": case["suite"], "split": case["split"], "risk_tier": case["risk_tier"], "agent_mode": mode, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_status": result.status_code, "response_status": payload.get("status"), "error_code": payload.get("code"), "route": payload.get("route", {}).get("route"), "intents": payload.get("route", {}).get("intents", []), "replan_count": payload.get("replan_count", 0), "latency_ms": elapsed_ms, "specialist_count": len(findings), "specialist_statuses": [finding.get("status") for finding in findings], "specialist_tool_calls": sum(finding.get("tool_calls", 0) for finding in findings), "ledger_count": ledger_count, "trace_id": result.headers.get("x-trace-id")}
+            return {"case_id": case["case_id"], "suite": case["suite"], "split": case["split"], "risk_tier": case["risk_tier"], "agent_mode": mode, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_status": result.status_code, "response_status": payload.get("status"), "error_code": payload.get("code"), "route": payload.get("route", {}).get("route"), "intents": payload.get("route", {}).get("intents", []), "replan_count": payload.get("replan_count", 0), "seed_clock": seed_clock.isoformat(), "latency_ms": elapsed_ms, "specialist_count": len(findings), "specialist_statuses": [finding.get("status") for finding in findings], "specialist_tool_calls": sum(finding.get("tool_calls", 0) for finding in findings), "ledger_count": ledger_count, "trace_id": result.headers.get("x-trace-id")}
         finally:
             app.dependency_overrides.clear()
             engine.dispose()

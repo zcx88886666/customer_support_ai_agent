@@ -66,12 +66,12 @@ def injected_builder(fault: str, original):
     return build
 
 
-def run_injected(case: dict, mode: str, run_id: str) -> dict:
+def run_injected(case: dict, mode: str, run_id: str, seed_clock: datetime) -> dict:
     fault = case["fault"]
     role = fault.split("_", 1)[0]
     builder_name = "build_order_graph" if role == "order" else "build_policy_graph"
     with patch.object(agent, builder_name, injected_builder(fault, getattr(agent, builder_name))):
-        result = run_case(case, mode, run_id)
+        result = run_case(case, mode, run_id, seed_clock)
     extra = {
         "specialist_statuses": sorted(result["specialist_statuses"]) == sorted(case["gold"]["expected_specialist_statuses"]),
         "replan_count": result["replan_count"] == case["gold"]["expected_replans"],
@@ -89,6 +89,7 @@ def main() -> None:
     os.environ["OPENROUTER_API_KEY"] = ""
     cases = load_cases()
     rng = random.Random(args.seed)
+    seed_clock = datetime.now(timezone.utc)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-collab-fault-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
     folder.mkdir(parents=True, exist_ok=False)
@@ -100,13 +101,13 @@ def main() -> None:
         for mode in modes:
             order.append({"case_id": case["case_id"], "agent_mode": mode})
             try:
-                results.append(run_injected(case, mode, run_id))
+                results.append(run_injected(case, mode, run_id, seed_clock))
             except Exception as exc:
                 results.append({"case_id": case["case_id"], "agent_mode": mode, "risk_tier": case["risk_tier"], "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)[:160]})
     pairs = [{"case_id": case["case_id"], "fault": case["fault"], "single_status": next(row["status"] for row in results if row["case_id"] == case["case_id"] and row["agent_mode"] == "single"), "collab_status": next(row["status"] for row in results if row["case_id"] == case["case_id"] and row["agent_mode"] == "collab")} for case in cases]
     summary = {"run_id": run_id, "suite": "collaboration_fault_dev_v1", "unique_cases": len(cases), "executions": len(results), "by_mode": {mode: {"pass": sum(row["status"] == "pass" for row in results if row["agent_mode"] == mode), "fail": sum(row["status"] == "fail" for row in results if row["agent_mode"] == mode), "incomplete": sum(row["status"] == "incomplete" for row in results if row["agent_mode"] == mode)} for mode in ("single", "collab")}, "critical_failures": [row["case_id"] + ":" + row["agent_mode"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"], "gate_pass": all(row["status"] == "pass" for row in results)}
     registry = PromptRegistry("release-v1")
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "source": "author-written synthetic fault matrix", "execution_order_seed": args.seed, "execution_order": order, "prompt_release_id": "release-v1", "prompt_hashes": registry.manifest["prompts"], "scorer_version": "smoke-v2+fault-contract-v1", "database": "fresh-SQLite-per-execution", "model": "deterministic-mock"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "source": "author-written synthetic fault matrix", "execution_order_seed": args.seed, "execution_order": order, "seed_clock": seed_clock.isoformat(), "prompt_release_id": "release-v1", "prompt_hashes": registry.manifest["prompts"], "scorer_version": "smoke-v2+fault-contract-v1", "database": "fresh-SQLite-per-execution", "model": "deterministic-mock"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "pairs.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in pairs), encoding="utf-8")

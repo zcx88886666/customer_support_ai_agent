@@ -8,6 +8,8 @@ Reviewing this path exposed a response-boundary issue: answer assembly validated
 
 These twelve rows are an author-written fault matrix over one question and one seeded order, not twelve independent customer scenarios or locked reviewed gold. The test uses synchronous injected graph results; an actual slow external call, duplicated fan-out, and contradictory external tool snapshots still need isolated integration coverage.
 
+The paired runner now captures one `seed_clock` per run. The post-change fault report `evals/reports/20261004T095852Z-collab-fault-3ad4f5/` passed 24/24, and every case row matched the manifest clock. The application wall clock remains live; this fixes fixture seeding parity, not complete time freezing.
+
 ```bash
 .venv/bin/python evals/runners/run_collaboration_faults.py
 ```

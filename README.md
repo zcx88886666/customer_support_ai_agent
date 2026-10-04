@@ -100,6 +100,8 @@ The [40-story memory A/B](docs/implementation/memory-ab-2026-10-03.md) compares 
 
 Confirmed `language=English` (also `en` or `en-US`) changes parent chat responses to English; correction, deletion, or consent withdrawal takes effect on the next request. This affects wording only. The [real-OIDC verification](docs/implementation/parent-memory-answer-2026-10-03.md) restores the synthetic demo profile after checking language use and customer isolation.
 
+The customer page includes consent and language preference controls. The [OIDC browser check](docs/implementation/memory-browser-2026-10-03.md) covers save, next-chat use, deletion, and restoration of the original synthetic profile.
+
 When an OpenRouter key is already configured, `.venv/bin/python evals/runners/run_paired_model.py` runs the three synthetic composite smoke cases in single and collaborative modes using the configured GPT-4o-mini model. The [measured development report](docs/implementation/paired-model-2026-10-03.md) gives provider-reported usage and cost; it is a small comparison rather than a locked quality benchmark.
 
 To regenerate and independently validate large synthetic CSV worlds:

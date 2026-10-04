@@ -24,6 +24,8 @@ async def lifespan(_app: FastAPI):
     PromptRegistry(settings.prompt_release)
     init_db()
     setup_checkpointer()
+    from .memory import setup_long_term_store
+    setup_long_term_store()
     configure_telemetry()
     yield
 

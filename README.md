@@ -90,6 +90,8 @@ The smoke runner validates 25 fixed JSONL cases and runs the collaboration cases
 
 The separate [business workflow runner](docs/implementation/business-eval-2026-10-03.md) replays four cross-role HTTP and controlled-worker cases on isolated SQLite databases with a terminal-state JSONL gold and local report. Run it with `AUTH_MODE=mock`; it is a development gate while real-OIDC PostgreSQL replay and human-reviewed locked cases remain open.
 
+The [40-story memory A/B](docs/implementation/memory-ab-2026-10-03.md) compares PostgresStore and Mem0 OSS in a separate PostgreSQL database. PostgresStore passed 40/40; Mem0 retained old corrected preferences and withdrawn utterances in its local history, so it is offline only. Compose enables the guarded PostgresStore route with `LONG_TERM_MEMORY_MODE=postgres_store`, while the SQLite mock setup leaves it `off`. Profile writes require consent and explicit confirmation; reads are scoped to the authenticated customer and fail closed if the store disagrees with the structured SQL profile. To reproduce the isolated A/B and seven application checks, follow the commands in the memory report. Do not run that evaluator against the live demo database.
+
 When an OpenRouter key is already configured, `.venv/bin/python evals/runners/run_paired_model.py` runs the three synthetic composite smoke cases in single and collaborative modes using the configured GPT-4o-mini model. The [measured development report](docs/implementation/paired-model-2026-10-03.md) gives provider-reported usage and cost; it is a small comparison rather than a locked quality benchmark.
 
 To regenerate and independently validate large synthetic CSV worlds:

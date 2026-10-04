@@ -23,6 +23,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
       AUTH_MODE: ${AUTH_MODE:-mock}
+      LONG_TERM_MEMORY_MODE: postgres_store
       OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/resolveai}
       OIDC_AUDIENCE: resolveai-api
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}

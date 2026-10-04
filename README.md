@@ -82,10 +82,13 @@ An approval can become stale if relevant order facts change. Calling the proposa
 ```bash
 .venv/bin/pytest -q
 .venv/bin/python evals/runners/run_smoke.py
+.venv/bin/python evals/runners/run_business.py
 cd apps/web && npm run build
 ```
 
-The smoke runner validates 25 fixed JSONL cases and runs the collaboration cases in both modes, each against a fresh SQLite database through the authenticated HTTP API. It writes `manifest.json`, `case_results.jsonl`, `summary.json`, and `report.html` under ignored `evals/reports/<run_id>/`. `summary.json` is the local machine-readable gate. The [database-first scorer](docs/implementation/scorer-mutation-2026-10-03.md) checks final return/refund facts, approval evidence, ownership, and citations; adversarial tests verify it rejects false outcomes. These cases are synthetic development cases, not a human-reviewed locked benchmark or a measured real-model comparison. The [stateful refund tests](docs/implementation/refund-stateful-2026-10-03.md) add generated action ordering and stale approved-fact checks.
+The smoke runner validates 25 fixed JSONL cases and runs the collaboration cases in both modes, each against a fresh SQLite database through the mock role-checked HTTP API. It writes `manifest.json`, `case_results.jsonl`, `summary.json`, and `report.html` under ignored `evals/reports/<run_id>/`. `summary.json` is the local machine-readable gate. The [database-first scorer](docs/implementation/scorer-mutation-2026-10-03.md) checks final return/refund facts, approval evidence, ownership, and citations; adversarial tests verify it rejects false outcomes. These cases are synthetic development cases, not a human-reviewed locked benchmark or a measured real-model comparison. The [stateful refund tests](docs/implementation/refund-stateful-2026-10-03.md) add generated action ordering and stale approved-fact checks.
+
+The separate [business workflow runner](docs/implementation/business-eval-2026-10-03.md) replays four cross-role HTTP and controlled-worker cases on isolated SQLite databases with a terminal-state JSONL gold and local report. Run it with `AUTH_MODE=mock`; it is a development gate while real-OIDC PostgreSQL replay and human-reviewed locked cases remain open.
 
 To regenerate and independently validate large synthetic CSV worlds:
 

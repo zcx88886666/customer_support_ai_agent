@@ -29,16 +29,20 @@ from resolveai.seed import seed_demo
 
 
 MODEL_OPTIONS = {
+    "openai/gpt-6-luna": {"input_per_m": 0.10, "output_per_m": 0.50,
+                          "output_name": "model_review_gpt6_luna", "default_max_cost_usd": 1.00},
+    "openai/gpt-6-sol": {"input_per_m": 2.00, "output_per_m": 10.00,
+                         "output_name": "model_review_gpt6_sol", "default_max_cost_usd": 1.00},
     "deepseek/deepseek-v3.2": {"input_per_m": 0.2088, "output_per_m": 0.3096,
                                 "output_name": "model_review_deepseek_v32", "default_max_cost_usd": 1.00},
     "openai/gpt-6-astra-pro": {"input_per_m": 10.0, "output_per_m": 50.0,
                                 "output_name": "model_review", "default_max_cost_usd": 30.0},
 }
-MODEL = "openai/gpt-6-astra-pro"
+MODEL = "openai/gpt-6-luna"
 PROMPT_RELEASE = "review-v1"
 CRITERIA = ROOT / "docs/implementation/eval-review-criteria-v3.md"
-PRICE_INPUT_PER_M = 10.0
-PRICE_OUTPUT_PER_M = 50.0
+PRICE_INPUT_PER_M = 0.10
+PRICE_OUTPUT_PER_M = 0.50
 SHEET_FIELDS = ["case_id", "suite", "source_path", "source_line", "risk_tier", "reviewer_id", "decision", "notes", "revised_gold_json", "reviewed_at_utc"]
 DECISIONS = {"accept", "revise", "reject", "needs_context"}
 
@@ -287,7 +291,7 @@ def export(packet: Path, cases: list[dict], results: dict[str, dict], output: Pa
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("packet", type=Path, help="Ignored packet created by prepare_minimum_review.py")
-    parser.add_argument("--model", choices=tuple(MODEL_OPTIONS), default="deepseek/deepseek-v3.2",
+    parser.add_argument("--model", choices=tuple(MODEL_OPTIONS), default="openai/gpt-6-luna",
                         help="Pinned reviewer model; each model writes to a separate output directory")
     parser.add_argument("--limit", type=int, default=0, help="Max new cases this invocation; zero means all")
     parser.add_argument("--case-id", action="append", default=[], help="Review only selected IDs, repeatable")
@@ -392,13 +396,19 @@ def main() -> int:
             content = prompt["template"].format(review_criteria=CRITERIA.read_text(encoding="utf-8"),
                                                 review_material=json.dumps(material, ensure_ascii=False, sort_keys=True))
             try:
-                review, usage, audit = request_review(client, key, content, case, material, args.max_tokens)
+                for response_attempt in range(2):
+                    try:
+                        review, usage, audit = request_review(client, key, content, case, material, args.max_tokens)
+                        break
+                    except ModelResponseError as exc:
+                        failure = {"case_id": case_id, "at_utc": datetime.now(timezone.utc).isoformat(), "usage": exc.usage}
+                        with failed_path.open("a", encoding="utf-8") as stream:
+                            stream.write(json.dumps(failure) + "\n")
+                        failed_usage.append(failure)
+                        spent_after_failure = spent + exc.usage["cost_usd"]
+                        if response_attempt == 1 or spent_after_failure >= args.max_cost_usd:
+                            raise
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                if isinstance(exc, ModelResponseError):
-                    failure = {"case_id": case_id, "at_utc": datetime.now(timezone.utc).isoformat(), "usage": exc.usage}
-                    with failed_path.open("a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(failure) + "\n")
-                    failed_usage.append(failure)
                 (output / "errors.log").open("a", encoding="utf-8").write(
                     f"{datetime.now(timezone.utc).isoformat()} {case_id} {type(exc).__name__}: {str(exc)[:240]}\n")
                 if isinstance(exc, httpx.HTTPStatusError):

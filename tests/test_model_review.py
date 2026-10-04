@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from scripts import prepare_minimum_review, run_model_review
-from scripts.run_model_review import CaseReview, compare_human, json_pointer, seed_snapshot, validate_review
+from scripts.run_model_review import CaseReview, ModelResponseError, compare_human, json_pointer, seed_snapshot, validate_review
 
 
 def review(**overrides):
@@ -69,10 +69,49 @@ def test_refresh_only_never_loads_api_key(tmp_path, monkeypatch):
     monkeypatch.setattr(run_model_review, "load_key", forbidden_key)
     monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--refresh-only"])
     assert run_model_review.main() == 0
-    manifest = json.loads((packet / "model_review_deepseek_v32/manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((packet / "model_review_gpt6_luna/manifest.json").read_text(encoding="utf-8"))
     assert manifest["reviewed"] == 0 and manifest["pending"] == 162
-    assert manifest["model"] == "deepseek/deepseek-v3.2"
-    assert (packet / "model_review_deepseek_v32/human_model_disagreements.csv").exists()
+    assert manifest["model"] == "openai/gpt-6-luna"
+    assert (packet / "model_review_gpt6_luna/human_model_disagreements.csv").exists()
+
+
+def test_sol_review_uses_own_output_and_prices(tmp_path, monkeypatch):
+    packet = tmp_path / "packet"
+    monkeypatch.setattr(sys, "argv", ["prepare_minimum_review.py", "--output", str(packet)])
+    prepare_minimum_review.main()
+    monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--refresh-only",
+                                       "--model", "openai/gpt-6-sol"])
+    assert run_model_review.main() == 0
+    manifest = json.loads((packet / "model_review_gpt6_sol/manifest.json").read_text(encoding="utf-8"))
+    assert manifest["model"] == "openai/gpt-6-sol"
+    assert manifest["list_price_input_per_m"] == 2.0
+    assert manifest["list_price_output_per_m"] == 10.0
+    assert not (packet / "model_review_gpt6_luna").exists()
+
+
+def test_invalid_model_evidence_retries_once_and_counts_failed_cost(tmp_path, monkeypatch):
+    packet = tmp_path / "packet"
+    monkeypatch.setattr(sys, "argv", ["prepare_minimum_review.py", "--output", str(packet)])
+    prepare_minimum_review.main()
+    monkeypatch.setattr(run_model_review, "load_key", lambda: "synthetic-key")
+    attempts = 0
+
+    def respond(client, key, content, case, material, max_tokens):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ModelResponseError("Invalid structured review: bad pointer",
+                                     {"input_tokens": 50, "output_tokens": 20, "cost_usd": 0.00002})
+        return review(case_id=case["case_id"]), {"input_tokens": 50, "output_tokens": 10,
+                                                "cost_usd": 0.00001}, []
+
+    monkeypatch.setattr(run_model_review, "request_review", respond)
+    monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--case-id", "smoke-01", "--limit", "1"])
+    assert run_model_review.main() == 0
+    manifest = json.loads((packet / "model_review_gpt6_luna/manifest.json").read_text(encoding="utf-8"))
+    assert attempts == 2
+    assert manifest["reviewed"] == 1 and manifest["failed_calls"] == 1
+    assert manifest["usage"]["total_cost_usd"] == 0.00003
 
 
 def test_deepseek_request_keeps_strict_schema_and_usage(monkeypatch):

@@ -29,7 +29,7 @@ from resolveai.seed import seed_demo
 
 MODEL = "openai/gpt-6-astra-pro"
 PROMPT_RELEASE = "review-v1"
-CRITERIA = ROOT / "docs/implementation/eval-review-criteria-v2.md"
+CRITERIA = ROOT / "docs/implementation/eval-review-criteria-v3.md"
 PRICE_INPUT_PER_M = 10.0
 PRICE_OUTPUT_PER_M = 50.0
 SHEET_FIELDS = ["case_id", "suite", "source_path", "source_line", "risk_tier", "reviewer_id", "decision", "notes", "revised_gold_json", "reviewed_at_utc"]

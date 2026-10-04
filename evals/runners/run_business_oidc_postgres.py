@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import socket
@@ -23,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 
 from resolveai import models as m
 from resolveai.db import make_engine
-from resolveai.prompts import ROOT
+from resolveai.prompts import PromptRegistry, ROOT
 from resolveai.seed import seed_demo
 
 if __package__:
@@ -97,7 +98,8 @@ def load_oidc_tokens() -> dict[str, str]:
     return {name: login(name, accounts[name]["password"]) for name in ("customer-one", "customer-two", "warehouse-demo", "supervisor-demo")}
 
 
-def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[str, str], report_dir: Path, restart_before_decision: bool = False, langfuse_outage: bool = False, kill_at_checkpoint: str | None = None) -> dict:
+def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[str, str], report_dir: Path, restart_before_decision: bool = False, langfuse_outage: bool = False, kill_at_checkpoint: str | None = None, seed_clock: datetime | None = None) -> dict:
+    seed_clock = seed_clock or datetime.now(timezone.utc)
     core_case = case.get("suite") == "core_business_dev_v1"
     terminal_case = {**case, "scenario": case["terminal_scenario"]} if core_case else case
     name = "ra_biz_oidc_" + run_id[:15].lower().replace("t", "_").replace("z", "") + "_" + run_id[-6:] + "_" + str(index)
@@ -110,11 +112,11 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
     factory = sessionmaker(engine, expire_on_commit=False)
     try:
         with factory.begin() as db:
-            seed_demo(db, datetime.now(timezone.utc))
+            seed_demo(db, seed_clock)
         if terminal_case["scenario"] == "expired_window":
             with factory.begin() as db:
                 shipment = db.scalar(select(m.Shipment).where(m.Shipment.order_id == case["fixture"]["order_id"]))
-                shipment.delivered_at = datetime.now(timezone.utc) - timedelta(days=20)
+                shipment.delivered_at = seed_clock - timedelta(days=20)
         port = available_port()
         log_path = report_dir / f"{case['case_id']}.api.log"
         with log_path.open("w", encoding="utf-8") as log:
@@ -184,14 +186,22 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                             )
                             chat_rows.append({"http_status": chat_response.status_code, "payload": chat_response.json(),
                                               "trace_id": chat_response.headers.get("x-trace-id")})
+                            with factory() as db:
+                                chat_rows[-1]["return_count"] = len(db.scalars(select(m.ReturnRequest)).all())
+                                chat_rows[-1]["ledger_count"] = len(db.scalars(select(m.RefundLedger)).all())
                         with factory() as db:
                             chat_return_ids = [row.id for row in db.scalars(select(m.ReturnRequest)).all()]
                             chat_ledger_count = len(db.scalars(select(m.RefundLedger)).all())
-                    statuses, observations = run_business.execute(None, terminal_case, run_id, post_request=post, issue_worker=issue_worker)
+                    if core_case and case["terminal_scenario"] == "scripted":
+                        statuses, observations = run_core_business.execute_scripted(None, case, run_id, chat_rows, post_request=post, issue_worker=issue_worker)
+                    else:
+                        statuses, observations = run_business.execute(None, terminal_case, run_id, post_request=post, issue_worker=issue_worker)
                 with factory() as db:
                     checks = run_business.score(terminal_case, statuses, observations, db)
                     if core_case:
                         checks.update(run_core_business.score_chat_phase(case, chat_rows, chat_return_ids, chat_ledger_count, observations))
+                        for name, expected in case["gold"].get("expected_observations", {}).items():
+                            checks[f"observation_{name}"] = observations.get(name) == expected
                     if kill_at_checkpoint:
                         from langgraph.checkpoint.postgres import PostgresSaver
                         from resolveai.approval_checkpoint import _config, build_approval_graph
@@ -214,7 +224,7 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                     time.sleep(6)
                 else:
                     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                return {"case_id": case["case_id"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "api_restarted_before_decision": restarted, "kill_at_checkpoint": kill_at_checkpoint, "latency_ms": elapsed_ms, "chat_trace_ids": [row["trace_id"] for row in chat_rows]}
+                return {"case_id": case["case_id"], "split": case["split"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "api_restarted_before_decision": restarted, "kill_at_checkpoint": kill_at_checkpoint, "latency_ms": elapsed_ms, "chat_trace_ids": [row["trace_id"] for row in chat_rows], "seed_clock": seed_clock.isoformat()}
             finally:
                 process.terminate()
                 try:
@@ -255,13 +265,14 @@ def main() -> None:
             if probe.connect_ex(("127.0.0.1", 9)) == 0:
                 raise RuntimeError("Outage target port 9 is unexpectedly reachable")
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-oidc-" + uuid4().hex[:6]
+    seed_clock = datetime.now(timezone.utc)
     report_dir = ROOT / "evals/reports" / run_id
     report_dir.mkdir(parents=True, exist_ok=False)
     tokens = load_oidc_tokens()
     results = []
     for index, case in enumerate(cases, start=1):
         try:
-            result = run_case(case, run_id, index, admin_url, tokens, report_dir, args.restart_before_decision, args.langfuse_outage, args.kill_at_checkpoint)
+            result = run_case(case, run_id, index, admin_url, tokens, report_dir, args.restart_before_decision, args.langfuse_outage, args.kill_at_checkpoint, seed_clock)
         except Exception as exc:
             result = {"case_id": case["case_id"], "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)[:180]}
         results.append(result)
@@ -269,9 +280,18 @@ def main() -> None:
     passed = all(row["status"] == "pass" for row in results)
     summary = {"run_id": run_id, "suite": "core_business_dev_v1_oidc_postgres" if args.core else "business_workflows_v2_oidc_postgres", "cases": len(results), "pass": sum(row["status"] == "pass" for row in results), "fail": sum(row["status"] == "fail" for row in results), "incomplete": sum(row["status"] == "incomplete" for row in results), "development_pass": passed, "gate_pass": passed if not args.core else False, "v6_minimum_cases_met": len(results) >= 30 if args.core else None, "release_gate_pass": False if args.core else None, "api_restart_requested": args.restart_before_decision, "langfuse_outage_requested": args.langfuse_outage, "kill_at_checkpoint": args.kill_at_checkpoint, "report": str(report_dir)}
     dataset = run_core_business.DATASET if args.core else run_business.DATASET
-    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "api_restart_before_decision": args.restart_before_decision, "langfuse_outage": args.langfuse_outage, "kill_at_checkpoint": args.kill_at_checkpoint, "model": "deterministic-mock" if args.core else "none"}, indent=2) + "\n", encoding="utf-8")
+    registry = PromptRegistry("release-v1") if args.core else None
+    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "seed_clock": seed_clock.isoformat(), "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "api_restart_before_decision": args.restart_before_decision, "langfuse_outage": args.langfuse_outage, "kill_at_checkpoint": args.kill_at_checkpoint, "model": "deterministic-mock" if args.core else "none", "scorer_version": "core-business-dev-v1" if args.core else "business-v2", "prompt_release_id": "release-v1" if args.core else None, "prompt_hashes": registry.manifest["prompts"] if registry else None, "source_git_commit": registry.manifest.get("source_git_commit") if registry else None}, indent=2) + "\n", encoding="utf-8")
     (report_dir / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (report_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    rows = ["<html><meta charset='utf-8'><title>ResolveAI OIDC business evaluation</title><body>",
+            f"<h1>{html.escape(summary['suite'])}</h1>",
+            f"<p>{len(results)} development cases; {summary['pass']} pass, {summary['fail']} fail, {summary['incomplete']} incomplete. Release gate: {summary['release_gate_pass']}.</p>",
+            "<table border='1'><tr><th>Case</th><th>Split</th><th>Status</th><th>Checks</th></tr>"]
+    for row in results:
+        rows.append(f"<tr><td>{html.escape(row['case_id'])}</td><td>{html.escape(row.get('split', 'dev'))}</td><td>{html.escape(row['status'])}</td><td>{html.escape(json.dumps(row.get('checks', row.get('error')), ensure_ascii=False))}</td></tr>")
+    rows.append("</table></body></html>")
+    (report_dir / "report.html").write_text("\n".join(rows), encoding="utf-8")
     print(json.dumps(summary))
     raise SystemExit(0 if passed else 1)
 

@@ -8,7 +8,7 @@ import json
 import tempfile
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,7 +41,8 @@ def load_cases() -> list[dict]:
                 or case.get("split") != "dev" or not case.get("dialogue_script")
                 or not case.get("group_keys") or not case.get("gold")
                 or case.get("review", {}).get("status") != "pending"
-                or case.get("terminal_scenario") != "approved_refund"):
+                or case.get("terminal_scenario") not in {"approved_refund", "inspection_exception", "stale_proposal", "cross_customer_denial", "unconfirmed_return", "expired_window", "scripted"}
+                or (case.get("terminal_scenario") == "scripted" and not case.get("workflow_steps"))):
             raise ValueError(f"Invalid development case {case.get('case_id')}")
     return cases
 
@@ -49,15 +50,84 @@ def load_cases() -> list[dict]:
 def score_chat_phase(case: dict, chat_rows: list[dict], chat_return_ids: list[str],
                      chat_ledger_count: int, observations: dict) -> dict[str, bool]:
     payload = chat_rows[-1]["payload"]
-    return {
-        "chat_http_status": all(row["http_status"] == 200 for row in chat_rows),
-        "chat_status": payload.get("status") == case["gold"]["chat_status"],
-        "chat_route": payload.get("route", {}).get("route") == case["gold"]["chat_route"],
+    checks = {
+        "chat_http_status": all(row["http_status"] == case["gold"]["chat_http_status"] for row in chat_rows),
+        "chat_status": payload.get("status") == case["gold"].get("chat_status"),
+        "chat_error_code": payload.get("code") == case["gold"].get("chat_error_code"),
+        "chat_route": payload.get("route", {}).get("route") == case["gold"].get("chat_route"),
         "chat_committed_return": len(chat_return_ids) == case["gold"]["chat_return_count"]
-            and payload.get("return_id") in chat_return_ids
-            and observations.get("return_id") == payload.get("return_id"),
+            and (payload.get("return_id") in chat_return_ids
+                 and observations.get("return_id") == payload.get("return_id")
+                 if chat_return_ids else payload.get("return_id") is None),
         "chat_no_early_refund": chat_ledger_count == case["gold"]["chat_ledger_count"],
     }
+    turn_gold = case["gold"].get("turn_gold", [])
+    if turn_gold:
+        checks["turn_count"] = len(chat_rows) == len(turn_gold)
+        for index, expected in enumerate(turn_gold):
+            if index >= len(chat_rows):
+                break
+            row = chat_rows[index]
+            for field, actual in (
+                ("http_status", row["http_status"]),
+                ("status", row["payload"].get("status")),
+                ("route", row["payload"].get("route", {}).get("route")),
+                ("return_count", row["return_count"]),
+                ("ledger_count", row["ledger_count"]),
+            ):
+                if field in expected:
+                    checks[f"turn_{index}_{field}"] = actual == expected[field]
+    return checks
+
+
+def execute_scripted(client: TestClient | None, case: dict, run_id: str, chat_rows: list[dict],
+                     *, post_request=None, issue_worker=None) -> tuple[dict, dict]:
+    """Replay versioned role actions; gold remains separate from the requests."""
+    issue_worker = issue_worker or worker.issue_approved_once
+    values = {"case_id": case["case_id"], **case["fixture"]}
+    chat_return_id = chat_rows[-1]["payload"].get("return_id")
+    if chat_return_id:
+        values["return_id"] = chat_return_id
+    statuses: dict[str, int] = {}
+    observations: dict = {"preapproval_issued": 0, "worker_replay_issued": 0}
+    if chat_return_id:
+        observations["return_id"] = chat_return_id
+
+    def resolve(value):
+        if isinstance(value, str):
+            return value.format_map(values)
+        if isinstance(value, dict):
+            return {key: resolve(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [resolve(item) for item in value]
+        return value
+
+    for step in case["workflow_steps"]:
+        name = step["name"]
+        if step["kind"] == "worker":
+            observations[step["observation"]] = len(issue_worker())
+            continue
+        role = step["role"]
+        actor = case["fixture"]["customer_id"] if role == "customer" else f"{role}-test"
+        path = resolve(step["path"])
+        body = resolve(step.get("body", {}))
+        if post_request:
+            status, payload = post_request(path, role, actor, body)
+        else:
+            response = client.post(path, json=body, headers={"x-mock-actor": actor, "x-mock-role": role,
+                                                            "x-eval-run-id": run_id, "x-eval-case-id": case["case_id"]})
+            status, payload = response.status_code, response.json()
+        statuses[name] = status
+        if step.get("same_as"):
+            observations[f"{name}_same_id"] = payload.get("id") == values[step["same_as"]]
+        if step.get("capture"):
+            captured = payload.get("id")
+            if not captured:
+                raise ValueError(f"Step {name} could not capture an ID")
+            values[step["capture"]] = captured
+            if step["capture"] == "return_id":
+                observations["return_id"] = captured
+    return statuses, observations
 
 
 def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
@@ -67,6 +137,10 @@ def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
         factory = sessionmaker(engine, expire_on_commit=False)
         with factory.begin() as db:
             run_business.seed_demo(db, seed_clock)
+        if case["terminal_scenario"] == "expired_window":
+            with factory.begin() as db:
+                shipment = db.scalar(select(m.Shipment).where(m.Shipment.order_id == case["fixture"]["order_id"]))
+                shipment.delivered_at = seed_clock - timedelta(days=20)
 
         def override_db():
             with factory() as db:
@@ -89,19 +163,28 @@ def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
                     )
                     chat_rows.append({"http_status": response.status_code, "payload": response.json(),
                                       "trace_id": response.headers.get("x-trace-id")})
+                    with factory() as db:
+                        chat_rows[-1]["return_count"] = len(db.scalars(select(m.ReturnRequest)).all())
+                        chat_rows[-1]["ledger_count"] = len(db.scalars(select(m.RefundLedger)).all())
                 with factory() as db:
                     chat_return_ids = [row.id for row in db.scalars(select(m.ReturnRequest)).all()]
                     chat_ledger_count = len(db.scalars(select(m.RefundLedger)).all())
                 terminal_case = {**case, "scenario": case["terminal_scenario"]}
-                statuses, observations = run_business.execute(client, terminal_case, run_id)
+                if case["terminal_scenario"] == "scripted":
+                    statuses, observations = execute_scripted(client, case, run_id, chat_rows)
+                else:
+                    statuses, observations = run_business.execute(client, terminal_case, run_id)
             with factory() as db:
                 checks = run_business.score(terminal_case, statuses, observations, db)
+            for name, expected in case["gold"].get("expected_observations", {}).items():
+                checks[f"observation_{name}"] = observations.get(name) == expected
             last_chat = chat_rows[-1]
             payload = last_chat["payload"]
             checks.update(score_chat_phase(case, chat_rows, chat_return_ids, chat_ledger_count, observations))
             return {"case_id": case["case_id"], "split": case["split"], "risk_tier": case["risk_tier"],
                     "status": "pass" if all(checks.values()) else "fail", "checks": checks,
-                    "chat_status": payload.get("status"), "http_statuses": statuses,
+                    "chat_status": payload.get("status"), "chat_error_code": payload.get("code"),
+                    "chat_http_status": last_chat["http_status"], "http_statuses": statuses,
                     "trace_ids": [row["trace_id"] for row in chat_rows],
                     "seed_clock": seed_clock.isoformat(),
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2)}

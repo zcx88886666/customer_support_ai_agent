@@ -9,7 +9,7 @@ The Docker/PostgreSQL/Keycloak/Commerce MCP application, controlled refund workf
 | v6 evaluation suite | Verified development evidence | Minimum runnable set | Later v6 target | Remaining gate |
 |---|---:|---:|---:|---|
 | Smoke | 30 unique cases, 33 executions | 25 | 25 | Independently reviewed critical gold and a clean locked split |
-| Core business | 6 isolated HTTP/worker terminal cases; 1 Agent-to-terminal development case on SQLite and OIDC/PostgreSQL | 30 | About 200 | Expand the conversational runner to 30 distinct workflows and obtain independent review |
+| Core business | 30 Agent-to-terminal development cases across 30 workflow families, passing on isolated SQLite and OIDC/PostgreSQL | 30 | About 200 | Independent critical review, grouped locked split, and broader multi-turn Agent coverage |
 | Intent/clarification | 30 route utterances | 30 | About 140 | Add slot, reference, clarification, and Replan gold; independent review |
 | Policy RAG | 20 positive plus 20 near-negative published-demo queries | 20 | About 60 | Human relevance review; version and scope coverage beyond four demo clauses |
 | Collaboration | 20 composite pairs, 20 single-domain pairs, 12 fault pairs | 20 | About 80 pairs | Real slow/contradictory sources; independent paired gold and safe grouped split |
@@ -30,4 +30,4 @@ Optional or conditional v6 items are Prometheus/Grafana, Mem0 online only after 
 
 ## Immediate next work
 
-The first [Agent-to-terminal development case](core-business-slice-2026-10-04.md) passes on isolated SQLite and real OIDC/PostgreSQL. Add distinct scenario families: supervisor rejection, repeated approval/worker replay, partial quantities and cumulative rounding, wrong-role mutations, seven-day boundary instants, stale policy/amount, and receipt/inspection quantity exceptions. Each case needs a database/audit gold state and a scorer mutation that proves the relevant failure is detected. Record development and separate OIDC/PostgreSQL results before marking the minimum gate done.
+The [30-case core development run](core-business-minimum-2026-10-04.md) has met the raw count on both mock SQLite and real OIDC/PostgreSQL. The next minimum-set engineering task is intent clarification and Replan gold beyond the existing 30 route-only labels. Prepare review packets for the critical cases across suites, then obtain two independent reviews per critical case and adjudicate disagreements before creating locked gold. The 30 core cases share a direct-return Agent template; add broader multi-turn conversations before claiming representative Agent success.

@@ -61,11 +61,16 @@ def classify(text: str) -> RouteDecision:
             and any(term in lower for term in ("能退", "可以退", "退吗", "return"))
             and not any(term in lower for term in ("我要退", "申请退货", "提交退货", "确认提交"))):
         return RouteDecision(route="knowledge", intents=["shipment_tracking", "policy_qa"])
+    if (any(term in lower for term in ("能退吗", "可以退吗", "可退吗", "can i return", "eligible for return"))
+            and not any(term in lower for term in ("我要退", "申请退货", "提交退货", "确认提交", "return request", "退款", "refund", "取消", "投诉", "人工"))):
+        return RouteDecision(route="knowledge", intents=["policy_qa"])
     if model_configured():
         try:
             candidate = call_structured("intent", {"message": text[:1000]}, RouteDecision, settings.prompt_release)
             if any(term in lower for term in ("退款", "refund")) and "refund_request" not in candidate.intents:
                 return RouteDecision(route="human_handoff", intents=["refund_request"], uncertainty="high_risk_intent_conflict")
+            if candidate.intents and set(candidate.intents) <= {"shipment_tracking", "order_status", "policy_qa"}:
+                return candidate.model_copy(update={"route": "knowledge"})
             return candidate
         except ModelUnavailable:
             return RouteDecision(route="human_handoff", intents=["unknown"], uncertainty="model_unavailable")

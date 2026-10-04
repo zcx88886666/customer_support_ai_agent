@@ -65,6 +65,23 @@ def test_undelivered_return_question_is_not_a_submission(db, monkeypatch):
     assert "尚未确认签收" in result["answer"]
 
 
+def test_clear_eligibility_questions_and_read_only_model_routes_stay_inquiry(monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="after_sales", intents=["return_request"]))
+    assert classify("已签收商品能退吗").intents == ["policy_qa"]
+    assert classify("特殊商品可以退吗").route == "knowledge"
+    assert classify("我要退货").intents == ["return_request"]
+    mixed = classify("可以退吗？也请立刻退款")
+    assert mixed.route == "human_handoff" and mixed.intents == ["refund_request"]
+
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="after_sales", intents=["shipment_tracking"]))
+    read_only = classify("我的包裹到哪里了")
+    assert read_only.route == "knowledge" and read_only.intents == ["shipment_tracking"]
+
+
 def test_single_domain_and_thread_isolation(db):
     result = run_chat(db, "cust-01", ChatInput(thread_id="thread-2", message="七天无理由退货政策是什么", agent_mode="collab"))
     assert len(result["findings"]) == 1

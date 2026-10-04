@@ -1,4 +1,4 @@
-"""Isolated HTTP replay and deterministic safety scoring for the 25 demo cases."""
+"""Isolated HTTP replay and deterministic safety scoring for synthetic cases."""
 
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ DATASET = ROOT / "evals/datasets/smoke_demo.jsonl"
 def load_cases() -> list[dict]:
     cases = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines() if line.strip()]
     ids = [case["case_id"] for case in cases]
-    if len(ids) != len(set(ids)) or len(cases) != 25:
-        raise ValueError("smoke_demo requires 25 unique cases")
+    if len(ids) != len(set(ids)) or len(cases) != 30:
+        raise ValueError("smoke_demo requires 30 unique cases")
     for case in cases:
         if case["schema_version"] != "v1" or not case.get("gold") or not case.get("dialogue_script"):
             raise ValueError(f"Invalid case {case.get('case_id')}")

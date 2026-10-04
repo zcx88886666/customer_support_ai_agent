@@ -11,14 +11,20 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from resolveai import models as domain_models
+from resolveai.db import Base, make_engine
 from resolveai.openrouter import strict_json_schema
 from resolveai.prompts import PromptRegistry, ROOT
+from resolveai.seed import seed_demo
 
 
 MODEL = "openai/gpt-6-astra-pro"
@@ -116,10 +122,57 @@ def load_material(case: dict) -> dict:
     raw = json.loads(path.read_text(encoding="utf-8").splitlines()[case["source_line"] - 1])
     if raw.get("case_id") != case["case_id"]:
         raise ValueError("Source line no longer matches packet")
-    return {"case": case, "source_record": raw}
+    return with_reference_material(case, {"case": case, "source_record": raw})
 
 
 _source_hashes: dict[str, str] = {}
+
+
+@lru_cache(maxsize=1)
+def seed_snapshot() -> dict[str, dict]:
+    """Read fixture facts from the checked-in seeder, never from proposed gold."""
+    clock = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            seed_demo(db, clock)
+            db.flush()
+            result = {}
+            for order in db.scalars(select(domain_models.Order)).all():
+                items = db.scalars(select(domain_models.OrderItem).where(domain_models.OrderItem.order_id == order.id)).all()
+                shipments = db.scalars(select(domain_models.Shipment).where(domain_models.Shipment.order_id == order.id)).all()
+                result[order.id] = {
+                    "reference_clock_utc": clock.isoformat(), "order_id": order.id,
+                    "customer_id": order.customer_id, "order_status": order.status,
+                    "order_version": order.version, "policy_bundle_id": order.policy_bundle_id,
+                    "favorable_window_days": order.favorable_window_days,
+                    "items": [{"item_id": item.id, "quantity": item.quantity, "paid_cents": item.paid_cents,
+                               "physical": db.get(domain_models.Product, item.product_id).physical,
+                               "returnable": db.get(domain_models.Product, item.product_id).returnable,
+                               "special_notice_accepted": db.get(domain_models.Product, item.product_id).special_notice_accepted}
+                              for item in items],
+                    "shipments": [{"status": shipment.status,
+                                   "delivered_at_utc": shipment.delivered_at.replace(tzinfo=timezone.utc).isoformat() if shipment.delivered_at else None}
+                                  for shipment in shipments],
+                }
+            return result
+    finally:
+        engine.dispose()
+
+
+def with_reference_material(case: dict, material: dict) -> dict:
+    fixture = case["input"].get("fixture") or {}
+    order_id = fixture.get("order_id")
+    if not order_id:
+        return material
+    facts = seed_snapshot().get(order_id)
+    if facts:
+        facts = json.loads(json.dumps(facts))
+        if case["input"].get("terminal_scenario") == "expired_window":
+            facts["shipments"][0]["delivered_at_utc"] = "20 days before runner invocation"
+        material["seed_facts"] = facts
+    return material
 
 
 def request_review(client: httpx.Client, key: str, content: str, case: dict, material: dict, max_tokens: int) -> tuple[CaseReview, dict, list[dict]]:
@@ -244,6 +297,9 @@ def main() -> int:
     identity = {"packet_sha256": sha256(packet_path), "criteria_sha256": criteria_hash,
                 "prompt_release_id": PROMPT_RELEASE, "prompt_sha256": prompt["sha256"], "model": MODEL,
                 "reviewer_code_sha256": sha256(Path(__file__)),
+                "seed_code_sha256": sha256(ROOT / "apps/api/resolveai/seed.py"),
+                "core_runner_sha256": sha256(ROOT / "evals/runners/run_core_business.py"),
+                "business_runner_sha256": sha256(ROOT / "evals/runners/run_business.py"),
                 "schema_sha256": hashlib.sha256(json.dumps(strict_json_schema(CaseReview), sort_keys=True).encode()).hexdigest()}
     manifest_path = output / "manifest.json"
     if manifest_path.exists():

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from scripts.run_model_review import CaseReview, compare_human, json_pointer, validate_review
+from scripts.run_model_review import CaseReview, compare_human, json_pointer, seed_snapshot, validate_review
 
 
 def review(**overrides):
@@ -47,3 +47,11 @@ def test_human_model_disagreement_uses_same_decisions(tmp_path):
     output = tmp_path / "disagreements.csv"
     assert compare_human(packet, cases, results, output) == 1
     assert list(csv.DictReader(output.open(encoding="utf-8")))[0]["model_decision"] == "needs_context"
+
+
+def test_reference_facts_come_from_seed_not_proposed_gold():
+    snapshot = seed_snapshot()
+    assert snapshot["demo-order-01"]["customer_id"] == "cust-01"
+    assert snapshot["demo-order-05"]["customer_id"] == "cust-02"
+    assert snapshot["demo-order-01"]["items"][0]["paid_cents"] == 1018
+    assert snapshot["demo-order-01"]["shipments"][0]["delivered_at_utc"].endswith("+00:00")

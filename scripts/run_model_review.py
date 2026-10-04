@@ -12,6 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -32,7 +33,7 @@ DECISIONS = {"accept", "revise", "reject", "needs_context"}
 class Finding(BaseModel):
     model_config = ConfigDict(extra="forbid")
     criterion: str
-    severity: str
+    severity: Literal["critical", "major", "minor"]
     evidence_path: str
     evidence_quote: str
     explanation: str
@@ -42,8 +43,8 @@ class Finding(BaseModel):
 class CaseReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
     case_id: str
-    decision: str
-    risk_tier_assessment: str
+    decision: Literal["accept", "revise", "reject", "needs_context"]
+    risk_tier_assessment: Literal["normal", "critical"]
     summary: str
     findings: list[Finding]
     missing_context: list[str]
@@ -51,18 +52,19 @@ class CaseReview(BaseModel):
 
     @model_validator(mode="after")
     def consistent(self):
-        if self.decision not in DECISIONS or self.risk_tier_assessment not in {"normal", "critical"}:
-            raise ValueError("Unknown decision or risk tier")
         if self.decision == "accept" and self.findings:
             raise ValueError("Accept cannot contain findings")
         if self.decision in {"revise", "reject"} and not self.findings:
             raise ValueError("Revision or rejection requires a finding")
         if self.decision == "needs_context" and not self.missing_context:
             raise ValueError("Needs-context requires missing facts")
-        for finding in self.findings:
-            if finding.severity not in {"critical", "major", "minor"}:
-                raise ValueError("Unknown finding severity")
         return self
+
+
+class ModelResponseError(ValueError):
+    def __init__(self, message: str, usage: dict):
+        super().__init__(message)
+        self.usage = usage
 
 
 def sha256(path: Path) -> str:
@@ -79,13 +81,17 @@ def json_pointer(value: object, pointer: str) -> object:
     return current
 
 
-def validate_review(review: CaseReview, case: dict, material: dict) -> None:
+def validate_review(review: CaseReview, case: dict, material: dict) -> list[dict]:
     if review.case_id != case["case_id"]:
         raise ValueError("Review case ID mismatch")
+    audit = []
     for finding in review.findings:
         cited = json_pointer(material, finding.evidence_path)
-        if finding.evidence_quote and finding.evidence_quote not in json.dumps(cited, ensure_ascii=False):
-            raise ValueError(f"Evidence quote does not match {finding.evidence_path}")
+        rendered = json.dumps(cited, ensure_ascii=False)
+        audit.append({"evidence_path": finding.evidence_path,
+                      "quote_matches": not finding.evidence_quote or finding.evidence_quote in rendered,
+                      "actual_value": rendered[:400]})
+    return audit
 
 
 def load_key() -> str:
@@ -116,7 +122,7 @@ def load_material(case: dict) -> dict:
 _source_hashes: dict[str, str] = {}
 
 
-def request_review(client: httpx.Client, key: str, content: str, case: dict, material: dict, max_tokens: int) -> tuple[CaseReview, dict]:
+def request_review(client: httpx.Client, key: str, content: str, case: dict, material: dict, max_tokens: int) -> tuple[CaseReview, dict, list[dict]]:
     body = {
         "model": MODEL,
         "messages": [{"role": "user", "content": content}],
@@ -135,8 +141,6 @@ def request_review(client: httpx.Client, key: str, content: str, case: dict, mat
             response.raise_for_status()
             payload = response.json()
             message = payload["choices"][0]["message"]
-            review = CaseReview.model_validate_json(message["content"])
-            validate_review(review, case, material)
             usage = payload.get("usage") or {}
             input_tokens = usage.get("prompt_tokens")
             output_tokens = usage.get("completion_tokens")
@@ -145,9 +149,15 @@ def request_review(client: httpx.Client, key: str, content: str, case: dict, mat
                 raise ValueError("OpenRouter response omitted token usage")
             if not isinstance(reported_cost, (int, float)) or reported_cost < 0:
                 reported_cost = (input_tokens * PRICE_INPUT_PER_M + output_tokens * PRICE_OUTPUT_PER_M) / 1_000_000
-            return review, {"input_tokens": input_tokens, "output_tokens": output_tokens,
-                            "cost_usd": round(float(reported_cost), 8), "cost_source": "provider" if isinstance(usage.get("cost"), (int, float)) else "list_price_estimate",
-                            "provider": payload.get("provider"), "finish_reason": payload["choices"][0].get("finish_reason")}
+            meter = {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                     "cost_usd": round(float(reported_cost), 8), "cost_source": "provider" if isinstance(usage.get("cost"), (int, float)) else "list_price_estimate",
+                     "provider": payload.get("provider"), "finish_reason": payload["choices"][0].get("finish_reason")}
+            try:
+                review = CaseReview.model_validate_json(message["content"])
+                audit = validate_review(review, case, material)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ModelResponseError(f"Invalid structured review: {type(exc).__name__}: {str(exc)[:150]}", meter) from exc
+            return review, meter, audit
         except (httpx.TimeoutException, httpx.NetworkError):
             if attempt == 2:
                 raise
@@ -185,10 +195,12 @@ def export(packet: Path, cases: list[dict], results: dict[str, dict], output: Pa
         if not item:
             continue
         review = item["review"]
+        mismatches = [audit["evidence_path"] for audit in item.get("evidence_audit", []) if not audit["quote_matches"]]
         rows.append({"case_id": case["case_id"], "suite": case["suite"], "source_path": case["source_path"],
                      "source_line": case["source_line"], "risk_tier": case["risk_tier"],
                      "reviewer_id": f"ai:openrouter:{MODEL}", "decision": review["decision"],
-                     "notes": review["summary"] + " " + "; ".join(f["explanation"] + " Suggested: " + f["suggested_change"] for f in review["findings"]),
+                     "notes": review["summary"] + " " + "; ".join(f["evidence_path"] + ": " + f["explanation"] + " Suggested: " + f["suggested_change"] for f in review["findings"])
+                              + (" Quote mismatch at " + ", ".join(mismatches) if mismatches else ""),
                      "revised_gold_json": "", "reviewed_at_utc": item["reviewed_at_utc"]})
     with (output / "model_review.csv").open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=SHEET_FIELDS)
@@ -201,6 +213,7 @@ def export(packet: Path, cases: list[dict], results: dict[str, dict], output: Pa
              "cost_usd": round(sum(item["usage"]["cost_usd"] for item in results.values()), 8)}
     return {"reviewed": len(results), "pending": len(cases) - len(results), "decisions": counts,
             "human_model_disagreements": disagreement_count, "usage": usage,
+            "evidence_quote_mismatches": sum(not audit["quote_matches"] for item in results.values() for audit in item.get("evidence_audit", [])),
             "human_release_review_complete": False, "locked_release_ready": False}
 
 
@@ -230,6 +243,7 @@ def main() -> int:
     result_dir.mkdir(exist_ok=True)
     identity = {"packet_sha256": sha256(packet_path), "criteria_sha256": criteria_hash,
                 "prompt_release_id": PROMPT_RELEASE, "prompt_sha256": prompt["sha256"], "model": MODEL,
+                "reviewer_code_sha256": sha256(Path(__file__)),
                 "schema_sha256": hashlib.sha256(json.dumps(strict_json_schema(CaseReview), sort_keys=True).encode()).hexdigest()}
     manifest_path = output / "manifest.json"
     if manifest_path.exists():
@@ -247,8 +261,15 @@ def main() -> int:
             review = CaseReview.model_validate(item["review"])
             validate_review(review, case, load_material(case))
             results[case_id] = item
+    failed_usage = []
+    failed_path = output / "failed_calls.jsonl"
+    if failed_path.exists():
+        failed_usage = [json.loads(line) for line in failed_path.read_text(encoding="utf-8").splitlines() if line]
     def save():
         summary = export(packet, cases, results, output)
+        summary["failed_calls"] = len(failed_usage)
+        summary["usage"]["failed_call_cost_usd"] = round(sum(row["usage"]["cost_usd"] for row in failed_usage), 8)
+        summary["usage"]["total_cost_usd"] = round(summary["usage"]["cost_usd"] + summary["usage"]["failed_call_cost_usd"], 8)
         manifest = {**identity, "updated_at_utc": datetime.now(timezone.utc).isoformat(),
                     "reviewer_type": "advisory_ai", "case_count": len(cases), **summary}
         temp = manifest_path.with_suffix(".json.tmp")
@@ -268,20 +289,26 @@ def main() -> int:
                 continue
             if args.limit and completed >= args.limit:
                 break
-            spent = sum(item["usage"]["cost_usd"] for item in results.values())
+            spent = sum(item["usage"]["cost_usd"] for item in results.values()) + sum(row["usage"]["cost_usd"] for row in failed_usage)
             if spent >= args.max_cost_usd:
                 break
             material = load_material(case)
             content = prompt["template"].format(review_criteria=CRITERIA.read_text(encoding="utf-8"),
                                                 review_material=json.dumps(material, ensure_ascii=False, sort_keys=True))
             try:
-                review, usage = request_review(client, key, content, case, material, args.max_tokens)
+                review, usage, audit = request_review(client, key, content, case, material, args.max_tokens)
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                if isinstance(exc, ModelResponseError):
+                    failure = {"case_id": case_id, "at_utc": datetime.now(timezone.utc).isoformat(), "usage": exc.usage}
+                    with failed_path.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(failure) + "\n")
+                    failed_usage.append(failure)
                 (output / "errors.log").open("a", encoding="utf-8").write(
                     f"{datetime.now(timezone.utc).isoformat()} {case_id} {type(exc).__name__}: {str(exc)[:240]}\n")
+                save()
                 print(json.dumps({"case_id": case_id, "error_type": type(exc).__name__, "reviewed": len(results)}, ensure_ascii=False), file=sys.stderr)
                 return 1
-            item = {"review": review.model_dump(), "usage": usage,
+            item = {"review": review.model_dump(), "usage": usage, "evidence_audit": audit,
                     "reviewed_at_utc": datetime.now(timezone.utc).isoformat()}
             path = result_dir / f"{case_id}.json"
             temp = path.with_suffix(".json.tmp")
@@ -291,10 +318,10 @@ def main() -> int:
             completed += 1
             summary = save()
             print(json.dumps({"case_id": case_id, "decision": review.decision,
-                              "reviewed": summary["reviewed"], "cost_usd": summary["usage"]["cost_usd"]}, ensure_ascii=False), flush=True)
+                              "reviewed": summary["reviewed"], "cost_usd": summary["usage"]["total_cost_usd"]}, ensure_ascii=False), flush=True)
     summary = save()
     print(json.dumps({"output": str(output), "reviewed": summary["reviewed"], "pending": summary["pending"],
-                      "cost_usd": summary["usage"]["cost_usd"]}, ensure_ascii=False))
+                      "cost_usd": summary["usage"]["total_cost_usd"]}, ensure_ascii=False))
     return 0
 
 

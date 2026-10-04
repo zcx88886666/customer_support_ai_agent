@@ -15,14 +15,13 @@ def review(**overrides):
     return CaseReview.model_validate(data)
 
 
-def test_review_rejects_unsubstantiated_finding():
+def test_review_audits_unsubstantiated_quote():
     material = {"case": {"case_id": "one", "gold": {"route": "knowledge"}}}
     finding = {"criterion": "routing", "severity": "major", "evidence_path": "/case/gold/route",
                "evidence_quote": "after_sales", "explanation": "Wrong route", "suggested_change": "Use clarify"}
-    with pytest.raises(ValueError, match="Evidence quote"):
-        validate_review(review(decision="revise", findings=[finding]), material["case"], material)
+    assert validate_review(review(decision="revise", findings=[finding]), material["case"], material)[0]["quote_matches"] is False
     finding["evidence_quote"] = "knowledge"
-    validate_review(review(decision="revise", findings=[finding]), material["case"], material)
+    assert validate_review(review(decision="revise", findings=[finding]), material["case"], material)[0]["quote_matches"] is True
     assert json_pointer(material, "/case/gold/route") == "knowledge"
 
 

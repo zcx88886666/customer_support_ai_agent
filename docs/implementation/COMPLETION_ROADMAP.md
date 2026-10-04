@@ -10,7 +10,7 @@ The Docker/PostgreSQL/Keycloak/Commerce MCP application, controlled refund workf
 |---|---:|---:|---:|---|
 | Smoke | 30 unique cases, 33 executions | 25 | 25 | Independently reviewed critical gold and a clean locked split |
 | Core business | 30 Agent-to-terminal development cases across 30 workflow families, passing on isolated SQLite and OIDC/PostgreSQL | 30 | About 200 | Independent critical review, grouped locked split, and broader multi-turn Agent coverage |
-| Intent/clarification | 30 route utterances | 30 | About 140 | Add slot, reference, clarification, and Replan gold; independent review |
+| Intent/clarification | 30 route utterances plus 12 isolated multi-turn dialogue cases | 30 | About 140 | Independent review and broader Replan/fault coverage |
 | Policy RAG | 20 positive plus 20 near-negative published-demo queries | 20 | About 60 | Human relevance review; version and scope coverage beyond four demo clauses |
 | Collaboration | 20 composite pairs, 20 single-domain pairs, 12 fault pairs | 20 | About 80 pairs | Real slow/contradictory sources; independent paired gold and safe grouped split |
 | Memory | 40 story A/B | Separate 40-story target | About 40 | Retention decision and sustained mixed traffic; Mem0 stays offline after failing correction/deletion |
@@ -30,4 +30,4 @@ Optional or conditional v6 items are Prometheus/Grafana, Mem0 online only after 
 
 ## Immediate next work
 
-The [30-case core development run](core-business-minimum-2026-10-04.md) has met the raw count on both mock SQLite and real OIDC/PostgreSQL. The next minimum-set engineering task is intent clarification and Replan gold beyond the existing 30 route-only labels. Prepare review packets for the critical cases across suites, then obtain two independent reviews per critical case and adjudicate disagreements before creating locked gold. The 30 core cases share a direct-return Agent template; add broader multi-turn conversations before claiming representative Agent success.
+The [30-case core development run](core-business-minimum-2026-10-04.md) has met the raw count on both mock SQLite and real OIDC/PostgreSQL. The [12-case intent dialogue suite](intent-dialogue-2026-10-04.md) adds slots, clarification, order/package choice, and handoff to the existing 30 route labels. Prepare review packets for the critical cases across suites, then obtain two independent reviews per critical case and adjudicate disagreements before creating locked gold. The 30 core cases share a direct-return Agent template; add broader multi-turn conversations before claiming representative Agent success.

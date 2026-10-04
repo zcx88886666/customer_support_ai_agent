@@ -14,6 +14,8 @@ Two new Python tests exercised interrupt, forged `Command(resume=...)` payload, 
 
 The first stale-proposal replay passed its business scorer but showed the old checkpoint still suspended. Adding stale-checkpoint reconciliation closed that gap, and the second replay confirmed it. The runner's restart mode stopped the first Uvicorn process after the proposal and started a fresh process on the same port before the supervisor request; its terminal SQL checks and a separate checkpoint inspection passed. Reports and API logs are under ignored `evals/reports/<run_id>/`; the synthetic databases remain locally for inspection. The Docker API image was rebuilt after the final code change and `/health` returned 200. No OpenRouter or Langfuse call was needed for these business replays.
 
+An additional [post-commit failure verifier](../../scripts/verify_approval_checkpoint_failure_postgres.py) used a fresh synthetic database `ra_approval_recovery_ad5955523a42`. It injected one exception after proposal commit but before wait-checkpoint creation, and one after supervisor decision commit but before resume. Both HTTP calls returned 500. Retrying the same idempotent endpoints restored the pending and completed checkpoints. The worker then issued exactly one correct ledger row; a second worker run issued none. **5/5 checks passed.** The verifier's first attempt reached the worker check but failed because it expected a dictionary instead of the worker's actual list return; the assertion was corrected and the clean rerun passed.
+
 Reproduce the focused checks:
 
 ```bash
@@ -21,7 +23,8 @@ Reproduce the focused checks:
 BUSINESS_PG_ADMIN_URL=postgresql://resolveai@<isolated-postgres-host>:5432/postgres .venv/bin/python evals/runners/run_business_oidc_postgres.py --case-id business-approved-refund
 BUSINESS_PG_ADMIN_URL=postgresql://resolveai@<isolated-postgres-host>:5432/postgres .venv/bin/python evals/runners/run_business_oidc_postgres.py --case-id business-stale-proposal
 BUSINESS_PG_ADMIN_URL=postgresql://resolveai@<isolated-postgres-host>:5432/postgres .venv/bin/python evals/runners/run_business_oidc_postgres.py --case-id business-approved-refund --restart-before-decision
+APPROVAL_RECOVERY_PG_ADMIN_URL=postgresql://resolveai@<isolated-postgres-host>:5432/postgres .venv/bin/python scripts/verify_approval_checkpoint_failure_postgres.py
 docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api
 ```
 
-These checks establish a durable PostgreSQL checkpoint across committed HTTP requests and an API process restart. A killed checkpoint write remains a separate recovery check. The checkpoint outcome is observational; it does not replace the SQL approval and refund ledger as the money authority.
+These checks establish a durable PostgreSQL checkpoint across committed HTTP requests, an API process restart, and injected post-commit checkpoint failures. An actual process kill during a checkpoint write remains a narrower recovery check. The checkpoint outcome is observational; it does not replace the SQL approval and refund ledger as the money authority.

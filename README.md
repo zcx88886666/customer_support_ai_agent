@@ -81,6 +81,8 @@ An approval can become stale if relevant order facts change. Calling the proposa
 
 On PostgreSQL, the proposal endpoint also saves a [LangGraph supervisor wait checkpoint](docs/implementation/approval-interrupt-2026-10-03.md). The authenticated decision endpoint resumes it after the SQL decision commits; stale replacement proposals close the old wait. The graph rereads SQL facts and cannot authorize or issue money from a resume payload. SQLite mock mode keeps the same SQL approval and refund rules without a durable approval checkpoint.
 
+The same report documents an API process-restart replay and a fresh-database failure-injection check showing that an endpoint retry repairs a checkpoint failure after the SQL proposal or decision committed. The controlled worker still issued one ledger row after recovery.
+
 ## Verification
 
 ```bash

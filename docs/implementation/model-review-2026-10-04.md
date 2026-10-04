@@ -23,3 +23,7 @@ The v6 release criterion still requires **two human reviewers for every critical
 `.venv/bin/pytest -q tests/test_model_review.py tests/test_minimum_review_packet.py` passed **6/6** after the refresh-only and packet instructions were added. `--refresh-only` also rebuilt the actual partial packet with **17 reviewed, 145 pending**, and no API call. A broader `.venv/bin/pytest -q` run first exposed a date-sensitive test fixture: the test seeded delivery relative to 2026-09-29 but used the real current clock for a positive return workflow, after its seven-day window in Asia/Shanghai. The agent and API positive-workflow tests now set delivery to two days before their execution. The complete `tests/test_agent.py` file passed **31/31** after that correction.
 
 The API refund test could not be completed in this execution environment: even a minimal FastAPI `TestClient` and a bare AnyIO `start_blocking_portal()` hung on entry, while direct lifespan invocation and `anyio.run()` completed. A 35-second bounded reproducer timed out. The API test's new delivery setup is therefore unverified by a completed HTTP test in this run, and no full-suite pass is claimed.
+
+## Later verification
+
+After the cost-efficient advisory review, the full suite was rerun outside the restricted sandbox: `.venv/bin/python -m pytest -q` passed **135/135 in 19.00 seconds** on 2026-10-04. This verifies the corrected API workflow fixture. The portal timeout above records the earlier restricted execution, not the current application test result.

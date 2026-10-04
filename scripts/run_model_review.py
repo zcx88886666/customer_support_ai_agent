@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -75,6 +76,13 @@ class ModelResponseError(ValueError):
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def inference_fingerprint() -> str:
+    code = "\n".join(inspect.getsource(part) for part in (
+        Finding, CaseReview, validate_review, load_material, seed_snapshot,
+        with_reference_material, request_review))
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 def json_pointer(value: object, pointer: str) -> object:
@@ -275,6 +283,7 @@ def main() -> int:
     parser.add_argument("packet", type=Path, help="Ignored packet created by prepare_minimum_review.py")
     parser.add_argument("--limit", type=int, default=0, help="Max new cases this invocation; zero means all")
     parser.add_argument("--case-id", action="append", default=[], help="Review only selected IDs, repeatable")
+    parser.add_argument("--refresh-only", action="store_true", help="Rebuild comparison outputs from saved reviews without an API call or key")
     parser.add_argument("--max-cost-usd", type=float, default=30.0, help="Stop before next request when cumulative spend reaches this cap")
     parser.add_argument("--max-tokens", type=int, default=3000)
     args = parser.parse_args()
@@ -296,16 +305,20 @@ def main() -> int:
     result_dir.mkdir(exist_ok=True)
     identity = {"packet_sha256": sha256(packet_path), "criteria_sha256": criteria_hash,
                 "prompt_release_id": PROMPT_RELEASE, "prompt_sha256": prompt["sha256"], "model": MODEL,
-                "reviewer_code_sha256": sha256(Path(__file__)),
                 "seed_code_sha256": sha256(ROOT / "apps/api/resolveai/seed.py"),
                 "core_runner_sha256": sha256(ROOT / "evals/runners/run_core_business.py"),
                 "business_runner_sha256": sha256(ROOT / "evals/runners/run_business.py"),
                 "schema_sha256": hashlib.sha256(json.dumps(strict_json_schema(CaseReview), sort_keys=True).encode()).hexdigest()}
     manifest_path = output / "manifest.json"
+    previous = {}
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
         if any(previous.get(key) != value for key, value in identity.items()):
             raise ValueError("Existing model review belongs to a different packet, prompt, model or schema")
+        if previous.get("inference_sha256") and previous["inference_sha256"] != inference_fingerprint():
+            raise ValueError("Review inference implementation changed; use a new packet")
+        if not previous.get("inference_sha256") and previous.get("reviewer_code_sha256") != sha256(Path(__file__)) and not args.refresh_only:
+            raise ValueError("Presentation code changed; run --refresh-only once before resuming")
     results = {}
     for case in cases:
         case_id = case["case_id"]
@@ -326,13 +339,23 @@ def main() -> int:
         summary["failed_calls"] = len(failed_usage)
         summary["usage"]["failed_call_cost_usd"] = round(sum(row["usage"]["cost_usd"] for row in failed_usage), 8)
         summary["usage"]["total_cost_usd"] = round(summary["usage"]["cost_usd"] + summary["usage"]["failed_call_cost_usd"], 8)
-        manifest = {**identity, "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        blocker_path = output / "blocker.json"
+        if blocker_path.exists():
+            summary["blocker"] = json.loads(blocker_path.read_text(encoding="utf-8"))
+        manifest = {**identity, "reviewer_code_sha256": previous.get("reviewer_code_sha256", sha256(Path(__file__))),
+                    "inference_sha256": inference_fingerprint(), "current_code_sha256": sha256(Path(__file__)),
+                    "updated_at_utc": datetime.now(timezone.utc).isoformat(),
                     "reviewer_type": "advisory_ai", "case_count": len(cases), **summary}
         temp = manifest_path.with_suffix(".json.tmp")
         temp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temp.replace(manifest_path)
         return manifest
     save()
+    if args.refresh_only:
+        summary = save()
+        print(json.dumps({"output": str(output), "reviewed": summary["reviewed"], "pending": summary["pending"],
+                          "human_model_disagreements": summary["human_model_disagreements"], "blocker": summary.get("blocker")}, ensure_ascii=False))
+        return 0
     selected = set(args.case_id)
     if selected - {case["case_id"] for case in cases}:
         raise ValueError("Unknown selected case ID")
@@ -361,6 +384,9 @@ def main() -> int:
                     failed_usage.append(failure)
                 (output / "errors.log").open("a", encoding="utf-8").write(
                     f"{datetime.now(timezone.utc).isoformat()} {case_id} {type(exc).__name__}: {str(exc)[:240]}\n")
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 402:
+                    (output / "blocker.json").write_text(json.dumps({"kind": "provider_payment_required",
+                        "http_status": 402, "case_id": case_id, "observed_at_utc": datetime.now(timezone.utc).isoformat()}, indent=2) + "\n", encoding="utf-8")
                 save()
                 print(json.dumps({"case_id": case_id, "error_type": type(exc).__name__, "reviewed": len(results)}, ensure_ascii=False), file=sys.stderr)
                 return 1
@@ -371,6 +397,7 @@ def main() -> int:
             temp.write_text(json.dumps(item, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             temp.replace(path)
             results[case_id] = item
+            (output / "blocker.json").unlink(missing_ok=True)
             completed += 1
             summary = save()
             print(json.dumps({"case_id": case_id, "decision": review.decision,

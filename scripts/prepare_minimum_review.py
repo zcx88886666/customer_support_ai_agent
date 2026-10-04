@@ -139,10 +139,12 @@ def main() -> None:
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output / "README.md").write_text(
         "# Independent review packet\n\n"
+        "Use the versioned human/model [review criteria v3](../../../docs/implementation/eval-review-criteria-v3.md), grounded in v6 and the checked-in synthetic seed. "
         "All cases are synthetic author-written development fixtures. No case is locked. Review each assigned case in `review_cases.jsonl` against its `source_path` and the v6 policy/business rules. "
         "Record `accept`, `revise`, `reject`, or `needs_context` plus a reason and reviewer identity in your assigned CSV. Review independently before seeing the other reviewer's sheet or AI suggestions. `needs_context` means a material claim cannot be checked from the supplied source and fixture; explain the missing fact. "
         "Critical cases require two reviewers; `reviewer_b.csv` also contains at least 20% of normal cases. "
         "Check customer ownership, seven-day boundaries, explicit confirmation, approval-before-refund, idempotency, source/version validity, missing-evidence behavior, and final database/audit gold where applicable. "
+        "Set `reviewer_id` to your human identity and `reviewed_at_utc` to an ISO-8601 UTC timestamp; explain each decision in `notes`. For `revise`, put a complete corrected gold object in `revised_gold_json` when possible. Record risk-tier concerns in notes. "
         "Record the adjudicated result in `adjudication.csv`; do not directly change source labels during review. "
         "Only after disagreements are resolved should a separate grouped dev/locked split be created and the locked suite run against frozen code, model, Prompt, policy, fixture, and scorer hashes. "
         "Cases sharing an order, customer, source conversation, or template must remain in one partition. The manifest reports connected group counts; these development fixtures cannot be relabeled into an independent locked partition.\n",

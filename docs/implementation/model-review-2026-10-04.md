@@ -1,0 +1,23 @@
+# Advisory OpenRouter review, 2026-10-04
+
+The ignored review packet is `evals/review_packets/20261004T211845Z/`. It contains 162 synthetic `dev` cases, a blank human `reviewer_a.csv`, and a separate `model_review/` directory. The local [criteria v3](eval-review-criteria-v3.md) apply to both reviewers. The model prompt is [eval_case_review.yaml](../../prompts/catalog/eval_case_review.yaml), hash-locked by [review-v1.json](../../prompts/releases/review-v1.json). The provider model is the exact `openai/gpt-6-astra-pro` slug, chosen as a high-capability reviewer; [OpenRouter lists structured-output support and $10/M input, $50/M output](https://openrouter.ai/openai/gpt-6-astra-pro). All model inputs in this packet are synthetic. No human sheet, source gold, credentials, or release labels were changed by the runner.
+
+## Measured result and blocker
+
+The v3 run saved **17/162** validated model reviews: **15 accept, 2 revise, 0 reject, 0 needs_context**. OpenRouter reported **152,444 input tokens, 8,711 output tokens, and $1.610210** for these 17 calls. Evidence pointers all resolved and the quote audit recorded zero mismatches. The two `revise` findings are `smoke-03` and `collab-01`: each requires only the shipment-status phrase, so a response could satisfy the gold without explaining that the delivered-goods seven-day return window has not started. These are **model suggestions pending independent human adjudication**, not adopted gold changes.
+
+The next case, `smoke-17`, returned **HTTP 402 Payment Required**. A read-only [current-key API](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key) check reported key limit **$6**, usage **$5.6701928**, and remaining limit **$0.3298072** at the time of the check. The current inference key cannot increase that limit. The ignored `model_review/errors.log`, `blocker.json`, per-case JSON and manifest preserve the run state. There are **145 pending** model reviews; no case was marked reviewed after the 402. The initial 17-case average suggests about $14 for the remaining cases, but longer core cases may cost more. The runner's packet-level recorded-spend stop is $30 before the next call; increase the key limit and ensure account credits are available before resuming.
+
+Earlier calibrations are preserved only in ignored local packets. v1 and v2 wording caused false positives: v1 required handoff for every undelivered question, and v2 treated `after_sales` as only a confirmed write. Criteria v3 corrects both against v6 §§3.2 and 5. The interrupted v2 pass and its costs must not be mixed with the v3 decision counts.
+
+## Human review and resume
+
+1. Review `review_cases.jsonl` and each `source_path` against [criteria v3](eval-review-criteria-v3.md), without reading `model_review/` first. Fill `reviewer_a.csv` with your human identity, `accept|revise|reject|needs_context`, reasons, optional complete corrected gold JSON, and UTC timestamp.
+2. After the OpenRouter key limit and account credit are increased, resume the exact model and rubric with `.venv/bin/python scripts/run_model_review.py evals/review_packets/20261004T211845Z --max-cost-usd 30`. Saved reviews are skipped. The runner clears the payment blocker after the next successful response.
+3. Run the same command with `--refresh-only` to rebuild `human_model_disagreements.csv` from saved reviews without any API call. Resolve disagreements by human adjudication and record the result in `adjudication.csv`; do not copy model labels directly into source gold.
+
+The v6 release criterion still requires **two human reviewers for every critical case** and at least 20% of normal cases. The AI pass is an additional diagnostic review. All packet cases remain `dev`, and existing fixture groups still cannot form a leakage-safe locked partition, so the locked release gate is false even after model review finishes.
+
+## Verification
+
+`.venv/bin/pytest -q tests/test_model_review.py tests/test_minimum_review_packet.py` passed **6/6** after the refresh-only and packet instructions were added. `--refresh-only` also rebuilt the actual partial packet with **17 reviewed, 145 pending**, and no API call. A broader `.venv/bin/pytest -q` run showed a failure at `tests/test_agent.py::test_return_slots_continue_across_turns_but_confirmation_is_current` and was interrupted during a later long-running test. Re-running that test alone reproduced a domain `outside_window` denial: its database fixture is fixed at 2026-09-29 while `run_chat` reads the real current clock, which has advanced beyond the seven-day seed window in Asia/Shanghai. This date-sensitive test issue is unrelated to the model-review code and remains open; no full-suite pass is claimed for this run.

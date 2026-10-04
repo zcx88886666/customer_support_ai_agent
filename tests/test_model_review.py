@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 
 import pytest
 
+from scripts import prepare_minimum_review, run_model_review
 from scripts.run_model_review import CaseReview, compare_human, json_pointer, seed_snapshot, validate_review
 
 
@@ -55,3 +57,17 @@ def test_reference_facts_come_from_seed_not_proposed_gold():
     assert snapshot["demo-order-05"]["customer_id"] == "cust-02"
     assert snapshot["demo-order-01"]["items"][0]["paid_cents"] == 1018
     assert snapshot["demo-order-01"]["shipments"][0]["delivered_at_utc"].endswith("+00:00")
+
+
+def test_refresh_only_never_loads_api_key(tmp_path, monkeypatch):
+    packet = tmp_path / "packet"
+    monkeypatch.setattr(sys, "argv", ["prepare_minimum_review.py", "--output", str(packet)])
+    prepare_minimum_review.main()
+    def forbidden_key():
+        raise AssertionError("Refresh must not access OpenRouter credentials")
+    monkeypatch.setattr(run_model_review, "load_key", forbidden_key)
+    monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--refresh-only"])
+    assert run_model_review.main() == 0
+    manifest = json.loads((packet / "model_review/manifest.json").read_text(encoding="utf-8"))
+    assert manifest["reviewed"] == 0 and manifest["pending"] == 162
+    assert (packet / "model_review/human_model_disagreements.csv").exists()

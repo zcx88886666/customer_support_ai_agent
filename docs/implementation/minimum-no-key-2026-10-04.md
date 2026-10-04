@@ -1,0 +1,5 @@
+# No-key minimum development verification
+
+On 2026-10-04, `.venv/bin/python scripts/verify_minimum.py` ran seven local synthetic development checks without OpenRouter or Langfuse credentials: the full Python suite, 30-case smoke replay, 30-case Agent-to-terminal core business replay, 30 route labels, 12 intent dialogues, 20-positive/20-near-negative policy retrieval, and 20 paired composite collaboration cases. The first aggregate report is ignored `evals/reports/20261004T120252Z-minimum-dba8a0/`. It recorded **7/7 suite passes**, `minimum_development_pass=true`, `locked_release_pass=false`, and `review_status=pending_independent_review`. Each component also wrote its own ignored report and log path in the aggregate `case_results.jsonl`.
+
+This is the runnable no-key development minimum. It does not establish an independently reviewed locked success rate. The report was produced before committing the metadata and aggregate script; rerun after commit to record a source revision that includes them.

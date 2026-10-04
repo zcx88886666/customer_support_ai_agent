@@ -10,3 +10,5 @@ The source data contain synthetic fixtures only. Do not commit completed reviewe
 .venv/bin/python scripts/prepare_minimum_review.py
 .venv/bin/pytest -q tests/test_minimum_review_packet.py
 ```
+
+Later on 2026-10-04, conservative `group_keys` and pending-review metadata were added to the legacy smoke, route, policy, and composite collaboration fixtures. The regenerated ignored packet is `evals/review_packets/20261004T120113Z/`: **zero missing group keys**. Its grouping audit found **one connected fixture/template group in each of the seven packet suites**, so the existing development cases still cannot be divided into leakage-safe dev and locked partitions. The new packet keeps all 162 cases in `dev` with zero locked labels.

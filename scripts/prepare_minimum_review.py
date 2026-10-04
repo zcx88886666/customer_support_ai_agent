@@ -42,6 +42,9 @@ def load_packet_cases() -> tuple[list[dict], list[dict]]:
             seen.add(case_id)
             if row.get("split", "dev") != "dev":
                 raise ValueError(f"Review packet cannot treat {case_id} as development data")
+            if (row.get("schema_version") != "v1" or not row.get("group_keys")
+                    or not row.get("source") or row.get("review", {}).get("status") != "pending"):
+                raise ValueError(f"Review metadata incomplete for {case_id}")
             if suite == "intent_route":
                 gold = {"route": row["route"], "acceptable_routes": row.get("acceptable_routes"), "intents": row["intents"]}
                 input_data = {"message": row["message"]}
@@ -65,6 +68,36 @@ def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def group_component_counts(cases: list[dict]) -> dict[str, int]:
+    """Count connected components under v6's conservative grouping keys."""
+    by_suite: dict[str, list[dict]] = {}
+    for case in cases:
+        by_suite.setdefault(case["suite"], []).append(case)
+    counts = {}
+    for suite, rows in by_suite.items():
+        parent = list(range(len(rows)))
+        first: dict[tuple[str, str], int] = {}
+
+        def root(index):
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        for index, case in enumerate(rows):
+            for key in ("customer", "order", "source", "template", "bundle"):
+                value = case["group_keys"].get(key)
+                if value in (None, "", "none"):
+                    continue
+                pair = (key, str(value))
+                if pair in first:
+                    parent[root(index)] = root(first[pair])
+                else:
+                    first[pair] = index
+        counts[suite] = len({root(index) for index in range(len(rows))})
+    return counts
 
 
 def main() -> None:
@@ -93,12 +126,16 @@ def main() -> None:
                                               "final_decision": "", "adjudicator_id": "", "notes": "", "reviewed_at_utc": ""}
                                              for case in cases],
               ["case_id", "suite", "final_decision", "adjudicator_id", "notes", "reviewed_at_utc"])
+    components = group_component_counts(cases)
     manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "status": "pending_independent_review",
                 "source_datasets": source_meta, "case_count": len(cases), "suite_counts": dict(counts),
                 "critical_count": sum(case["risk_tier"] == "critical" for case in cases),
                 "normal_count": len(normal), "reviewer_a_assignments": len(cases),
                 "reviewer_b_assignments": len(second_review), "normal_double_review_count": len(double_normal),
-                "missing_group_keys": sum(not case["group_keys"] for case in cases), "locked_cases": 0}
+                "missing_group_keys": sum(not case["group_keys"] for case in cases),
+                "group_components_by_suite": components,
+                "grouped_locked_split_ready": False,
+                "locked_cases": 0}
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output / "README.md").write_text(
         "# Independent review packet\n\n"
@@ -108,10 +145,10 @@ def main() -> None:
         "Check customer ownership, seven-day boundaries, explicit confirmation, approval-before-refund, idempotency, source/version validity, missing-evidence behavior, and final database/audit gold where applicable. "
         "Record the adjudicated result in `adjudication.csv`; do not directly change source labels during review. "
         "Only after disagreements are resolved should a separate grouped dev/locked split be created and the locked suite run against frozen code, model, Prompt, policy, fixture, and scorer hashes. "
-        "Cases sharing an order, customer, source conversation, or template must remain in one partition. Legacy files missing `group_keys` require group annotation before splitting.\n",
+        "Cases sharing an order, customer, source conversation, or template must remain in one partition. The manifest reports connected group counts; these development fixtures cannot be relabeled into an independent locked partition.\n",
         encoding="utf-8",
     )
-    print(json.dumps({"output": str(output), **{key: manifest[key] for key in ("case_count", "critical_count", "normal_count", "reviewer_b_assignments", "missing_group_keys", "locked_cases")}}, ensure_ascii=False))
+    print(json.dumps({"output": str(output), **{key: manifest[key] for key in ("case_count", "critical_count", "normal_count", "reviewer_b_assignments", "missing_group_keys", "group_components_by_suite", "locked_cases")}}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

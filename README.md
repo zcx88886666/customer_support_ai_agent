@@ -86,12 +86,15 @@ The same report documents an API process-restart replay and a fresh-database fai
 ## Verification
 
 ```bash
+.venv/bin/python scripts/verify_minimum.py
 .venv/bin/pytest -q
 .venv/bin/python evals/runners/run_smoke.py
 .venv/bin/python evals/runners/run_business.py
 .venv/bin/python evals/runners/run_core_business.py
 cd apps/web && npm run build
 ```
+
+`verify_minimum.py` runs the seven no-key development checks together and writes an ignored aggregate manifest, suite log, JSONL, summary, and HTML report. A passing development minimum does not mark the independently reviewed locked release gate as passed. See the [minimum run report](docs/implementation/minimum-no-key-2026-10-04.md).
 
 The smoke runner validates 30 fixed JSONL cases and runs three collaboration cases in both modes, each against a fresh SQLite database through the mock role-checked HTTP API. It writes `manifest.json`, `case_results.jsonl`, `summary.json`, and `report.html` under ignored `evals/reports/<run_id>/`. `summary.json` is the local machine-readable gate. The [database-first scorer](docs/implementation/scorer-mutation-2026-10-03.md) checks final return/refund facts, approval evidence, ownership, and citations; adversarial tests verify it rejects false outcomes. These cases are synthetic development cases, not a human-reviewed locked benchmark or a measured real-model comparison. The [stateful refund tests](docs/implementation/refund-stateful-2026-10-03.md) add generated action ordering and stale approved-fact checks. See the [30-case expansion report](docs/implementation/smoke-expansion-2026-10-03.md).
 

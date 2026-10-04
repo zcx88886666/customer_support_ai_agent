@@ -24,4 +24,7 @@ def test_minimum_review_packet_assigns_two_critical_reviews(tmp_path, monkeypatc
     assert critical_ids <= b_ids
     assert len(b_ids - critical_ids) >= math.ceil(manifest["normal_count"] * 0.2)
     assert manifest["locked_cases"] == 0
+    assert manifest["missing_group_keys"] == 0
+    assert manifest["grouped_locked_split_ready"] is False
+    assert all(count >= 1 for count in manifest["group_components_by_suite"].values())
     assert all(case["split"] == "dev" and case["review_status"] == "pending" for case in cases)

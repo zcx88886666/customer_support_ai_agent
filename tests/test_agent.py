@@ -9,6 +9,7 @@ from resolveai.agent import classify, run_chat, validate_finding, review_evidenc
 from resolveai.domain import DomainError
 from resolveai import models as m
 from resolveai.policy import activate, create_draft, index_and_verify
+from resolveai.memory import delete_preference, set_consent, upsert_preference
 from resolveai.schemas import ChatInput, DelegationTask, SpecialistFinding
 
 
@@ -18,6 +19,37 @@ def test_composite_dispatch_and_unreceived_limit(db):
     assert len(result["findings"]) == 2
     assert "尚未确认签收" in result["answer"]
     assert {finding["source_version"] for finding in result["findings"]} == {"1", "policy-demo-v1"}
+
+
+def test_parent_uses_confirmed_language_without_changing_business_facts(db):
+    set_consent(db, "cust-01", True)
+    upsert_preference(db, "cust-01", "language", "English", True)
+    question = ChatInput(thread_id="english-composite", message="包裹没到能退吗", order_id="demo-order-02", agent_mode="collab")
+    english = run_chat(db, "cust-01", question)
+    assert english["status"] == "answered"
+    assert "Delivery has not been confirmed" in english["answer"]
+    assert {finding["source_version"] for finding in english["findings"]} == {"1", "policy-demo-v1"}
+    assert "refund" not in english["answer"].lower()
+    assert db.get(m.ThreadState, question.thread_id).state.get("language") is None
+
+    upsert_preference(db, "cust-01", "language", "中文", True)
+    corrected = run_chat(db, "cust-01", ChatInput(thread_id="corrected-composite", message=question.message, order_id=question.order_id))
+    assert "尚未确认签收" in corrected["answer"]
+    upsert_preference(db, "cust-01", "language", "English", True)
+    delete_preference(db, "cust-01", "language")
+    revoked = run_chat(db, "cust-01", ChatInput(thread_id="revoked-composite", message=question.message, order_id=question.order_id))
+    assert "尚未确认签收" in revoked["answer"]
+
+
+def test_language_preference_cannot_confirm_return_or_leak_to_other_customer(db):
+    set_consent(db, "cust-01", True)
+    upsert_preference(db, "cust-01", "language", "English", True)
+    pending = run_chat(db, "cust-01", ChatInput(thread_id="english-return", message="我要退货", order_id="demo-order-01", item_id="demo-item-01", quantity=1, reason="changed mind"))
+    assert pending["status"] == "clarify"
+    assert "explicitly confirm" in pending["answer"]
+    assert db.query(m.ReturnRequest).count() == 0
+    other = run_chat(db, "cust-02", ChatInput(thread_id="other-language", message="包裹没到能退吗", order_id="demo-order-05"))
+    assert "查到的订单事实" in other["answer"]
 
 
 def test_undelivered_return_question_is_not_a_submission(db, monkeypatch):

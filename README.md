@@ -98,6 +98,8 @@ The same six cases also passed in the [real Keycloak OIDC and fresh PostgreSQL r
 
 The [40-story memory A/B](docs/implementation/memory-ab-2026-10-03.md) compares PostgresStore and Mem0 OSS in a separate PostgreSQL database. PostgresStore passed 40/40; Mem0 retained old corrected preferences and withdrawn utterances in its local history, so it is offline only. Compose enables the guarded PostgresStore route with `LONG_TERM_MEMORY_MODE=postgres_store`, while the SQLite mock setup leaves it `off`. Profile writes require consent and explicit confirmation; reads are scoped to the authenticated customer and fail closed if the store disagrees with the structured SQL profile. To reproduce the isolated A/B and seven application checks, follow the commands in the memory report. Do not run that evaluator against the live demo database.
 
+Confirmed `language=English` (also `en` or `en-US`) changes parent chat responses to English; correction, deletion, or consent withdrawal takes effect on the next request. This affects wording only. The [real-OIDC verification](docs/implementation/parent-memory-answer-2026-10-03.md) restores the synthetic demo profile after checking language use and customer isolation.
+
 When an OpenRouter key is already configured, `.venv/bin/python evals/runners/run_paired_model.py` runs the three synthetic composite smoke cases in single and collaborative modes using the configured GPT-4o-mini model. The [measured development report](docs/implementation/paired-model-2026-10-03.md) gives provider-reported usage and cost; it is a small comparison rather than a locked quality benchmark.
 
 To regenerate and independently validate large synthetic CSV worlds:

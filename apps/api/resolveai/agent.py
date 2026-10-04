@@ -18,6 +18,7 @@ from .openrouter import configured as model_configured, call_structured, ModelUn
 from .config import settings
 from .policy_retrieval import retrieve
 from .commerce_client import read_order, CommerceUnavailable
+from .memory import list_preferences
 
 
 class AgentState(TypedDict, total=False):
@@ -197,18 +198,21 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
     return graph.compile()
 
 
-def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=None, access_token: str | None = None):
+def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=None, access_token: str | None = None, language: str = "zh"):
     policy_graph = build_policy_graph(db)
     order_graph = build_order_graph(db, customer_id, access_token)
+
+    def say(zh: str, en: str) -> str:
+        return en if language == "en" else zh
 
     def route(state: AgentState):
         decision = RouteDecision.model_validate(state["route_candidate"]) if state.get("route_candidate") else classify(state["text"])
         intents = decision.intents
         order_id = state.get("order_id")
         if decision.route == "human_handoff":
-            return {"route": decision.model_dump(), "intents": intents, "status": "handoff", "answer": "已转人工处理。"}
+            return {"route": decision.model_dump(), "intents": intents, "status": "handoff", "answer": say("已转人工处理。", "I have referred this to a human support agent.")}
         if "complaint" in intents:
-            return {"route": decision.model_dump(), "intents": intents, "status": "handoff", "answer": "投诉已转人工处理。"}
+            return {"route": decision.model_dump(), "intents": intents, "status": "handoff", "answer": say("投诉已转人工处理。", "I have referred your complaint to a human support agent.")}
         if order_id:
             order = d.owned_order(db, customer_id, order_id)
             bundle_id, version = order.policy_bundle_id, order.version
@@ -216,7 +220,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             bundle_id, version = d.active_policy(db).id, None
         order_needed = any(x in intents for x in ("shipment_tracking", "order_status", "return_request", "refund_request", "cancel_request"))
         if order_needed and not order_id:
-            return {"route": decision.model_dump(), "intents": intents, "status": "clarify", "answer": "请提供要查询的订单编号。", "bundle_id": bundle_id}
+            return {"route": decision.model_dump(), "intents": intents, "status": "clarify", "answer": say("请提供要查询的订单编号。", "Please provide the order number you want to check."), "bundle_id": bundle_id}
         return {"route": decision.model_dump(), "intents": intents, "bundle_id": bundle_id, "order_version": version, "status": "ready"}
 
     def dispatch(state: AgentState):
@@ -299,23 +303,23 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         for role, finding in validated:
             if role == "order":
                 status = finding.facts.get("shipment_status")
-                pieces.append(f"查到的订单事实：包裹 {finding.source_ids[1]} 状态为 {status or '未知'}。")
+                pieces.append(say(f"查到的订单事实：包裹 {finding.source_ids[1]} 状态为 {status or '未知'}。", f"Verified order fact: package {finding.source_ids[1]} has status {status or 'unknown'}."))
                 if status != "delivered" and ("policy_qa" in state["intents"] or "return_request" in state["intents"]):
-                    pieces.append("包裹尚未确认签收，不能按签收次日起算的七日无理由退货流程直接提交；请联系人工核查配送异常。")
+                    pieces.append(say("包裹尚未确认签收，不能按签收次日起算的七日无理由退货流程直接提交；请联系人工核查配送异常。", "Delivery has not been confirmed. The return window measured from the day after delivery cannot be applied yet; please contact support to check the delivery issue."))
             if role == "policy":
                 refs = "、".join(finding.source_ids)
-                pieces.append(f"适用条款：{refs}。签收后的申请期限由该政策包确定。")
+                pieces.append(say(f"适用条款：{refs}。签收后的申请期限由该政策包确定。", f"Relevant policy clauses: {', '.join(finding.source_ids)}. The applicable policy bundle determines the request window after delivery."))
         if len(validated) < len(state.get("tasks", [])):
-            pieces.append("部分证据未核实，退货资格和退款需人工复核。")
+            pieces.append(say("部分证据未核实，退货资格和退款需人工复核。", "Some evidence could not be verified. A human must review return eligibility and any refund."))
         if "refund_request" in state["intents"]:
-            pieces.append("退款须待仓库质检、服务端提案及主管批准后才能执行。")
+            pieces.append(say("退款须待仓库质检、服务端提案及主管批准后才能执行。", "A refund requires warehouse inspection, a server-side proposal, and supervisor approval before it can be issued."))
         if "cancel_request" in state["intents"]:
-            pieces.append("取消订单请联系人工客服。")
+            pieces.append(say("取消订单请联系人工客服。", "Please contact a human support agent to request an order cancellation."))
         if "complaint" in state["intents"]:
-            pieces.append("投诉已转人工处理。")
+            pieces.append(say("投诉已转人工处理。", "I have referred your complaint to a human support agent."))
         if not pieces:
-            pieces.append("请补充问题或联系人工客服。")
-        return {"status": "answered", "answer": "".join(pieces)}
+            pieces.append(say("请补充问题或联系人工客服。", "Please add more detail or contact a human support agent."))
+        return {"status": "answered", "answer": " ".join(pieces) if language == "en" else "".join(pieces)}
 
     graph = StateGraph(AgentState)
     graph.add_node("route", route)
@@ -336,6 +340,12 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
     thread = db.get(m.ThreadState, body.thread_id)
     if thread and thread.customer_id != customer_id:
         raise d.DomainError("thread_not_found", "Thread unavailable", 404)
+    language_value = list_preferences(db, customer_id).get("language", "").strip().lower()
+    language = "en" if language_value in {"english", "en", "en-us"} else "zh"
+
+    def say(zh: str, en: str) -> str:
+        return en if language == "en" else zh
+
     now = datetime.now(timezone.utc)
     previous = thread.state if thread else {}
     pending_expired = bool(thread and previous.get("status") == "clarify" and thread.updated_at and now - d.aware(thread.updated_at) > timedelta(hours=24))
@@ -370,33 +380,34 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
     quantity = body.quantity or (None if order_changed else old.get("quantity"))
     reason = body.reason or (None if order_changed else old.get("reason"))
     if over_revision_limit:
-        result = {"status": "handoff", "answer": "已达到自动处理轮次上限，请联系人工客服。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+        result = {"status": "handoff", "answer": say("已达到自动处理轮次上限，请联系人工客服。", "The automatic handling limit has been reached. Please contact a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif decision.route == "human_handoff":
-        result = {"status": "handoff", "answer": "已转人工处理。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+        result = {"status": "handoff", "answer": say("已转人工处理。", "I have referred this to a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif decision.intents == ["unknown"]:
-        result = {"status": "clarify", "answer": "请说明要查询的订单、物流或退货问题。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+        result = {"status": "clarify", "answer": say("请说明要查询的订单、物流或退货问题。", "Please describe your order, delivery, or return question."), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif order_id and any(intent in decision.intents for intent in ("shipment_tracking", "order_status", "refund_request", "cancel_request")) and not shipment_id and len(ships := db.scalars(select(m.Shipment).where(m.Shipment.order_id == order_id)).all()) > 1:
-        result = {"status": "clarify", "answer": "此订单有多个包裹，请选择要查询的包裹编号。", "shipment_options": [ship.id for ship in ships], "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+        result = {"status": "clarify", "answer": say("此订单有多个包裹，请选择要查询的包裹编号。", "This order has multiple packages. Please select the package number you want to check."), "shipment_options": [ship.id for ship in ships], "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif "return_request" in decision.intents:
         missing = next((pair for pair in ((not order_id, "请提供订单编号。"), (not item_id, "请提供要退的商品项编号。"), (not quantity, "请提供退货数量。"), (not reason, "请提供退货原因。"), (not body.confirmed, "请明确确认订单、商品、数量、原因并提交退货申请。"), (not body.idempotency_key, "请使用提交按钮生成幂等请求编号。")) if pair[0]), (False, ""))
         if missing[0]:
-            result = {"status": "clarify", "answer": missing[1], "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+            translations = {"请提供订单编号。": "Please provide the order number.", "请提供要退的商品项编号。": "Please provide the order item you want to return.", "请提供退货数量。": "Please provide the quantity to return.", "请提供退货原因。": "Please provide the reason for the return.", "请明确确认订单、商品、数量、原因并提交退货申请。": "Please explicitly confirm the order, item, quantity, and reason before submitting the return request.", "请使用提交按钮生成幂等请求编号。": "Please use the submit button to generate a unique request key."}
+            result = {"status": "clarify", "answer": say(missing[1], translations[missing[1]]), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
         else:
             request = d.create_return(db, customer_id, order_id, item_id, quantity, reason, True, body.idempotency_key, now, revision)
-            result = {"status": "return_requested", "answer": "退货申请已提交，尚未退款。", "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+            result = {"status": "return_requested", "answer": say("退货申请已提交，尚未退款。", "Your return request was submitted. No refund has been issued."), "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     else:
         from .checkpoint import parent_checkpointer
         replan_count = 0
         reuse_findings: dict[str, dict] = {}
         while True:
             with parent_checkpointer() as checkpointer:
-                graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token)
+                graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token, language)
                 state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "shipment_id": shipment_id, "plan_revision": revision, "mode": body.agent_mode, "findings": [], "reuse_findings": reuse_findings}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
             if state.get("status") != "replan":
                 result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode, "replan_count": replan_count}
                 break
             if replan_count >= 2 or revision >= 4:
-                result = {"status": "handoff", "answer": "业务事实持续变化，已转人工处理。", "route": decision.model_dump(), "plan_revision": revision, "findings": [], "agent_mode": body.agent_mode, "replan_count": replan_count}
+                result = {"status": "handoff", "answer": say("业务事实持续变化，已转人工处理。", "The verified business facts kept changing. I have referred this to a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": [], "agent_mode": body.agent_mode, "replan_count": replan_count}
                 break
             replan_count += 1
             tasks_by_id = {task["task_id"]: task["specialist"] for task in state.get("tasks", [])}
@@ -405,11 +416,11 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
             db.expire_all()
             revision += 1
     if result["status"] == "clarify" and (int(old.get("clarifications", 0)) >= 2 or (decision.intents == ["unknown"] and int(old.get("unknown_clarifications", 0)) >= 1)):
-        result = {"status": "handoff", "answer": "已达到澄清轮次上限，请联系人工客服。", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+        result = {"status": "handoff", "answer": say("已达到澄清轮次上限，请联系人工客服。", "The clarification limit has been reached. Please contact a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     if result["status"] == "handoff":
         ticket = db.get(m.Ticket, old.get("ticket_id")) if old.get("ticket_id") else None
         if ticket is None:
-            topic = "customer requested support" if decision.route == "human_handoff" else "clarification limit" if "上限" in result["answer"] else "complaint"
+            topic = "customer requested support" if decision.route == "human_handoff" else "clarification limit" if "上限" in result["answer"] or "limit has been reached" in result["answer"] else "complaint"
             ticket = m.Ticket(customer_id=customer_id, order_id=order_id, topic=topic)
             db.add(ticket)
             db.flush()

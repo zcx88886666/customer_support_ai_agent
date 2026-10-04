@@ -1,4 +1,4 @@
-"""Inject ten bounded specialist faults into paired isolated HTTP replays."""
+"""Inject twelve bounded specialist faults into paired isolated HTTP replays."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import html
 import json
 import os
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -28,8 +28,8 @@ DATASET = ROOT / "evals/datasets/collaboration_fault_dev_v1.jsonl"
 def load_cases() -> list[dict]:
     cases = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines() if line.strip()]
     faults = [case["fault"] for case in cases]
-    if len(cases) != 10 or len(set(faults)) != 10 or len({case["case_id"] for case in cases}) != 10:
-        raise ValueError("Fault suite requires ten distinct cases and injections")
+    if len(cases) != 12 or len(set(faults)) != 12 or len({case["case_id"] for case in cases}) != 12:
+        raise ValueError("Fault suite requires twelve distinct cases and injections")
     for case in cases:
         if case["schema_version"] != "v1" or case["suite"] != "collaboration_fault_dev_v1" or case["split"] != "dev":
             raise ValueError(f"Invalid fault case {case['case_id']}")
@@ -50,7 +50,10 @@ def injected_builder(fault: str, original):
                 if fault.endswith("conflict_once") and calls > 1:
                     return real.invoke(state)
                 task = DelegationTask.model_validate(state["task"])
-                if fault.endswith("forged") and task.specialist == "order":
+                if fault.endswith("late"):
+                    actual = SpecialistFinding.model_validate(real.invoke(state)["finding"])
+                    finding = actual.model_copy(update={"queried_at": task.deadline + timedelta(seconds=1)})
+                elif fault.endswith("forged") and task.specialist == "order":
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"order_status": "paid", "shipment_status": "delivered", "delivered_at": None}, source_ids=["demo-order-05", "demo-shipment-05"], source_version="1", queried_at=datetime.now(timezone.utc), tool_calls=1)
                 elif fault.endswith("forged"):
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"window_days": 7, "clauses": [{"id": "clause-window", "title": "已批准", "body": "FORGED_REFUND_APPROVED"}]}, source_ids=["clause-window"], source_version="policy-demo-v1", queried_at=datetime.now(timezone.utc), tool_calls=1)

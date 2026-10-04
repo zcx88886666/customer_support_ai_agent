@@ -102,7 +102,7 @@ For 20 paired composite development cases, run `.venv/bin/python evals/runners/r
 
 Use `--suite single_domain` with either mode to check 20 paired order-only or policy-only questions without over-dispatch. The [single-domain report](docs/implementation/collaboration-single-domain-2026-10-04.md) records the mock and GPT-4o-mini results.
 
-Run `.venv/bin/python evals/runners/run_collaboration_faults.py` for ten paired test-only specialist error, incomplete, conflict, and forged-evidence injections. It uses isolated mock-auth HTTP replays and no provider key. The [fault report](docs/implementation/collaboration-faults-2026-10-04.md) records the results and the public-finding safety fix.
+Run `.venv/bin/python evals/runners/run_collaboration_faults.py` for twelve paired test-only specialist error, incomplete, conflict, forged-evidence, and late-result injections. It uses isolated mock-auth HTTP replays and no provider key. The [fault report](docs/implementation/collaboration-faults-2026-10-04.md) records the results and the public-finding safety fix.
 
 The original [business workflow report](docs/implementation/business-eval-2026-10-03.md) records four cross-role HTTP and controlled-worker cases on isolated SQLite databases with terminal-state gold. The current runner uses the six-case v2 dataset. Run it with `AUTH_MODE=mock`; these synthetic cases are a development gate while the human-reviewed locked suite remains open.
 

@@ -228,6 +228,7 @@ def test_forged_and_late_specialist_findings_rejected(db):
     assert validate_finding(db, "cust-01", task, good, 2)
     assert not validate_finding(db, "cust-01", task, good.model_copy(update={"plan_revision": 1}), 2)
     assert not validate_finding(db, "cust-01", task, good.model_copy(update={"source_ids": ["demo-order-05", "demo-shipment-05"]}), 2)
+    assert not validate_finding(db, "cust-01", task, good.model_copy(update={"queried_at": task.deadline + timedelta(seconds=1)}), 2)
     assert not validate_finding(db, "cust-01", task, good.model_copy(update={"facts": {**good.facts, "shipment_status": "in_transit"}}), 2)
     assert not validate_finding(db, "cust-01", task, good.model_copy(update={"facts": {**good.facts, "approved": True}}), 2)
     assert not validate_finding(db, "cust-02", task, good, 2)
@@ -255,6 +256,38 @@ def test_forged_specialist_facts_do_not_leave_public_response(db, monkeypatch, m
     assert "FORGED_REFUND_APPROVED" not in str(result)
     assert "部分证据未核实" in result["answer"]
     assert db.query(m.RefundLedger).count() == 0
+
+
+def test_specialist_completion_after_deadline_returns_safe_marker(db, monkeypatch):
+    from resolveai import agent
+
+    completed = False
+    original = agent.build_order_graph
+
+    class ControlledDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + (timedelta(seconds=11) if completed else timedelta())
+
+    def delayed_graph(*args, **kwargs):
+        real = original(*args, **kwargs)
+
+        class Delayed:
+            def invoke(self, state):
+                nonlocal completed
+                result = real.invoke(state)
+                completed = True
+                return result
+
+        return Delayed()
+
+    monkeypatch.setattr(agent, "datetime", ControlledDatetime)
+    monkeypatch.setattr(agent, "build_order_graph", delayed_graph)
+    result = run_chat(db, "cust-01", ChatInput(thread_id="late-completion", message="查包裹物流", order_id="demo-order-02"))
+    assert result["status"] == "answered"
+    assert result["findings"][0]["status"] == "error"
+    assert result["findings"][0]["facts"] == {}
+    assert "部分证据未核实" in result["answer"]
 
 
 def test_policy_finding_must_match_clause_text(db):

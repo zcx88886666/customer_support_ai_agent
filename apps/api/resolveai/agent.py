@@ -170,6 +170,8 @@ def review_evidence(task_name: str, question: str, evidence: list[tuple[str, dic
 def validate_finding(db: Session, customer_id: str, task: DelegationTask, finding: SpecialistFinding, current_revision: int) -> bool:
     if finding.task_id != task.task_id or finding.plan_revision != current_revision or task.plan_revision != current_revision or finding.status != "ok":
         return False
+    if d.aware(finding.queried_at) > d.aware(task.deadline):
+        return False
     if finding.model_reviewed != bool(finding.reviewed_source_ids) or not set(finding.reviewed_source_ids).issubset(finding.source_ids) or len(finding.reviewed_source_ids) != len(set(finding.reviewed_source_ids)):
         return False
     if task.specialist == "policy":
@@ -333,6 +335,8 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             else:
                 graph = policy_graph if task.specialist == "policy" else order_graph
                 finding = SpecialistFinding.model_validate(graph.invoke({"task": task.model_dump(mode="json")})["finding"])
+                if datetime.now(timezone.utc) > task.deadline:
+                    finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["deadline_expired"])
         return {"findings": [finding.model_dump(mode="json")]}
 
     def single(state: AgentState):

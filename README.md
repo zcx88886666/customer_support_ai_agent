@@ -108,6 +108,8 @@ The [40-story memory A/B](docs/implementation/memory-ab-2026-10-03.md) compares 
 
 Confirmed `language=English` (also `en` or `en-US`) changes parent chat responses to English; correction, deletion, or consent withdrawal takes effect on the next request. This affects wording only. The [real-OIDC verification](docs/implementation/parent-memory-answer-2026-10-03.md) restores the synthetic demo profile after checking language use and customer isolation.
 
+Preference deletion and consent withdrawal also [erase the revoked value](docs/implementation/memory-erasure-2026-10-03.md) from the current SQL row and PostgresStore; the row identity and audit remain. A migration scrubs previously revoked SQL values. This does not erase historical backups or exports.
+
 The customer page includes consent and language preference controls. The [OIDC browser check](docs/implementation/memory-browser-2026-10-03.md) covers save, next-chat use, deletion, and restoration of the original synthetic profile.
 
 The optional [PostgreSQL memory write-load runner](docs/implementation/memory-write-load-2026-10-03.md) creates a fresh isolated database and measures 1/5/10 concurrent synthetic customer preference corrections and guarded reads. Its report records actual latency and final revocation checks; it leaves the database for inspection.

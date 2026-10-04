@@ -18,9 +18,11 @@ def test_consent_correction_deletion_and_isolation(db):
     assert list_preferences(db, "cust-01") == {"language": "中文"}
     delete_preference(db, "cust-01", "language")
     assert list_preferences(db, "cust-01") == {}
+    assert db.query(MemoryEntry).filter_by(customer_id="cust-01", key="language").one().value == ""
     upsert_preference(db, "cust-01", "language", "English", True)
     set_consent(db, "cust-01", False)
     assert list_preferences(db, "cust-01") == {}
+    assert db.query(MemoryEntry).filter_by(customer_id="cust-01", key="language").one().value == ""
 
 
 def test_memory_rejects_sensitive_content(db):

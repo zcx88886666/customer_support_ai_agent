@@ -78,7 +78,7 @@ def main() -> None:
         assert not store.search(_namespace(owner), limit=20)
         assert not store.search(_namespace(stranger), limit=20)
         entries = db.scalars(select(m.MemoryEntry).where(m.MemoryEntry.customer_id == owner)).all()
-        assert len(entries) == 1 and entries[0].revoked
+        assert len(entries) == 1 and entries[0].revoked and entries[0].value == ""
         checks.append("no_retrievable_store_data")
     print(json.dumps({"database": "isolated_postgresql", "checks": checks, "passed": len(checks)}))
 

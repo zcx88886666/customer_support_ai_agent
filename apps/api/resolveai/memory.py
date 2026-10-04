@@ -140,6 +140,7 @@ def delete_preference(db: Session, customer_id: str, key: str):
     entry = db.scalar(select(m.MemoryEntry).where(m.MemoryEntry.customer_id == customer_id, m.MemoryEntry.key == key))
     if entry:
         entry.revoked = True
+        entry.value = ""
         d.audit(db, customer_id, "revoke_preference", "memory", entry.id, details={"key": key})
     store = _store(db)
     if store is not None:
@@ -155,6 +156,7 @@ def set_consent(db: Session, customer_id: str, consent: bool):
         store = _store(db)
         for entry in db.scalars(select(m.MemoryEntry).where(m.MemoryEntry.customer_id == customer_id)).all():
             entry.revoked = True
+            entry.value = ""
         if store is not None:
             store.clear(customer_id)
     d.audit(db, customer_id, "memory_consent", "profile", customer_id, details={"consent": consent})

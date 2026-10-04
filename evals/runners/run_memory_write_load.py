@@ -128,7 +128,7 @@ def main() -> None:
         with SessionLocal() as db:
             assert all(list_preferences(db, customer_id) == {} for customer_id in all_customers)
             entries = db.scalars(select(m.MemoryEntry).where(m.MemoryEntry.customer_id.in_(all_customers))).all()
-            assert len(entries) == len(all_customers) and all(entry.revoked for entry in entries)
+            assert len(entries) == len(all_customers) and all(entry.revoked and entry.value == "" for entry in entries)
             from langgraph.store.postgres import PostgresStore
             store = PostgresStore(db.connection().connection.driver_connection)
             assert all(not store.search(_namespace(customer_id), limit=5) for customer_id in all_customers)

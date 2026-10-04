@@ -8,7 +8,7 @@ import json
 import tempfile
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,13 +28,13 @@ else:
     from score import _ledger_authorized
 
 
-DATASET = ROOT / "evals/datasets/business_workflows_v1.jsonl"
+DATASET = ROOT / "evals/datasets/business_workflows_v2.jsonl"
 
 
 def load_cases() -> list[dict]:
     cases = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines() if line.strip()]
     ids = [case["case_id"] for case in cases]
-    if len(cases) != 4 or len(ids) != len(set(ids)) or any(case.get("schema_version") != "v1" or case.get("split") != "dev" or not case.get("gold") for case in cases):
+    if len(cases) != 6 or len(ids) != len(set(ids)) or any(case.get("schema_version") != "v2" or case.get("split") != "dev" or not case.get("gold") for case in cases):
         raise ValueError("Invalid business workflow development dataset")
     return cases
 
@@ -52,8 +52,15 @@ def execute(client: TestClient, case: dict, run_id: str) -> tuple[dict, dict]:
         statuses[name] = response.status_code
         return response.json()
 
-    def create(name: str, reason: str, key: str) -> dict:
-        return post(name, "/returns", "customer", customer, {"order_id": order_id, "order_item_id": item_id, "quantity": 1, "reason": reason, "confirmed": True, "idempotency_key": key})
+    def create(name: str, reason: str, key: str, confirmed: bool = True) -> dict:
+        return post(name, "/returns", "customer", customer, {"order_id": order_id, "order_item_id": item_id, "quantity": 1, "reason": reason, "confirmed": confirmed, "idempotency_key": key})
+
+    if case["scenario"] == "unconfirmed_return":
+        create("unconfirmed_return_refused", "synthetic return", case["case_id"], confirmed=False)
+        return statuses, observations
+    if case["scenario"] == "expired_window":
+        create("expired_return_refused", "synthetic return", case["case_id"])
+        return statuses, observations
 
     if case["scenario"] == "cross_customer_denial":
         create("foreign_return_refused", "foreign attempt", case["case_id"])
@@ -114,7 +121,7 @@ def score(case: dict, statuses: dict, observations: dict, db) -> dict[str, bool]
         checks["return_idempotent"] = observations.get("same_return_on_retry") is True
     if case["scenario"] == "stale_proposal":
         checks["proposal_replaced"] = observations.get("proposal_replaced") is True
-    if case["scenario"] != "cross_customer_denial":
+    if gold["return_count"] > 0:
         checks["return_id"] = any(request.id == observations.get("return_id") for request in returns)
     if ledgers:
         checks["worker_issued_once"] = observations.get("worker_issued") == 1
@@ -131,6 +138,10 @@ def run_case(case: dict, run_id: str) -> dict:
         factory = sessionmaker(engine, expire_on_commit=False)
         with factory.begin() as db:
             seed_demo(db, datetime.now(timezone.utc))
+        if case["scenario"] == "expired_window":
+            with factory.begin() as db:
+                shipment = db.scalar(select(m.Shipment).where(m.Shipment.order_id == case["fixture"]["order_id"]))
+                shipment.delivered_at = datetime.now(timezone.utc) - timedelta(days=20)
 
         def override_db():
             with factory() as db:
@@ -166,10 +177,10 @@ def main() -> None:
         except Exception as exc:
             results.append({"case_id": case["case_id"], "split": case["split"], "risk_tier": case["risk_tier"], "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)})
     counts = Counter(row["status"] for row in results)
-    summary = {"run_id": run_id, "suite": "business_workflows_v1", "unique_cases": len(cases), "executions": len(results), "counts": dict(counts), "critical_failures": [row["case_id"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"], "gate_pass": counts.get("pass") == len(cases)}
+    summary = {"run_id": run_id, "suite": "business_workflows_v2", "unique_cases": len(cases), "executions": len(results), "counts": dict(counts), "critical_failures": [row["case_id"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"], "gate_pass": counts.get("pass") == len(cases)}
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "scorer_version": "business-v1", "auth_mode": "mock", "database": "isolated-sqlite-per-case", "model": "none", "seed": "demo-current-clock"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "scorer_version": "business-v2", "auth_mode": "mock", "database": "isolated-sqlite-per-case", "model": "none", "seed": "demo-current-clock"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     rows = ["<html><meta charset='utf-8'><title>ResolveAI business workflow report</title><body>", f"<h1>Run {html.escape(run_id)}</h1>", f"<p>{len(cases)} cases; {counts.get('pass', 0)} pass, {counts.get('fail', 0)} fail, {counts.get('incomplete', 0)} incomplete.</p>", "<table border='1'><tr><th>Case</th><th>Status</th><th>Checks</th></tr>"]
     for row in results:

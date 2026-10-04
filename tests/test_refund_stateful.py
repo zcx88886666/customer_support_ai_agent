@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -16,7 +17,7 @@ AT = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
 ACTIONS = ("receipt", "inspect_pass", "inspect_fail", "proposal", "approve", "reject", "issue", "retry")
 
 
-@settings(max_examples=100, deadline=None)
+@settings(max_examples=min(5000, max(1, int(os.getenv("STATEFUL_REFUND_EXAMPLES", "100")))), deadline=None)
 @example(quantity=1, actions=["receipt", "inspect_pass", "proposal", "approve", "issue", "retry"])
 @example(quantity=2, actions=["receipt", "inspect_pass", "proposal", "reject", "issue"])
 @example(quantity=3, actions=["receipt", "inspect_fail", "proposal", "approve", "issue"])

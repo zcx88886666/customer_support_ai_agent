@@ -140,7 +140,7 @@ def main() -> None:
     (output / "README.md").write_text(
         "# Independent review packet\n\n"
         "All cases are synthetic author-written development fixtures. No case is locked. Review each assigned case in `review_cases.jsonl` against its `source_path` and the v6 policy/business rules. "
-        "Record `accept`, `revise`, or `reject` plus a reason and reviewer identity in your assigned CSV. Review independently before seeing the other reviewer's sheet. "
+        "Record `accept`, `revise`, `reject`, or `needs_context` plus a reason and reviewer identity in your assigned CSV. Review independently before seeing the other reviewer's sheet or AI suggestions. `needs_context` means a material claim cannot be checked from the supplied source and fixture; explain the missing fact. "
         "Critical cases require two reviewers; `reviewer_b.csv` also contains at least 20% of normal cases. "
         "Check customer ownership, seven-day boundaries, explicit confirmation, approval-before-refund, idempotency, source/version validity, missing-evidence behavior, and final database/audit gold where applicable. "
         "Record the adjudicated result in `adjudication.csv`; do not directly change source labels during review. "

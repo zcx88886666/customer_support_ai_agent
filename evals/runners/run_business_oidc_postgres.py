@@ -73,7 +73,7 @@ def load_oidc_tokens() -> dict[str, str]:
     return {name: login(name, accounts[name]["password"]) for name in ("customer-one", "customer-two", "warehouse-demo", "supervisor-demo")}
 
 
-def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[str, str], report_dir: Path) -> dict:
+def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[str, str], report_dir: Path, restart_before_decision: bool = False) -> dict:
     name = "ra_biz_oidc_" + run_id[:15].lower().replace("t", "_").replace("z", "") + "_" + run_id[-6:] + "_" + str(index)
     with psycopg.connect(admin_url, autocommit=True) as conn:
         conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
@@ -95,11 +95,19 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
             process = subprocess.Popen([sys.executable, "-m", "uvicorn", "resolveai.api:app", "--host", "127.0.0.1", "--port", str(port), "--no-access-log"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
             try:
                 wait_healthy(port, process)
+                restarted = False
                 customer = "customer-one" if case["fixture"]["customer_id"] == "cust-01" else "customer-two"
                 token_by_role = {"customer": tokens[customer], "warehouse": tokens["warehouse-demo"], "supervisor": tokens["supervisor-demo"]}
                 started = time.perf_counter()
                 with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=30) as client:
                     def post(path, role, _actor, body):
+                        nonlocal process, restarted
+                        if restart_before_decision and role == "supervisor" and path.endswith("/decision") and not restarted:
+                            process.terminate()
+                            process.wait(timeout=5)
+                            process = subprocess.Popen([sys.executable, "-m", "uvicorn", "resolveai.api:app", "--host", "127.0.0.1", "--port", str(port), "--no-access-log"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+                            wait_healthy(port, process)
+                            restarted = True
                         response = client.post(path, json=body, headers={"Authorization": "Bearer " + token_by_role[role], "x-eval-run-id": run_id, "x-eval-case-id": case["case_id"]})
                         return response.status_code, response.json()
 
@@ -111,7 +119,9 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                     statuses, observations = run_business.execute(None, case, run_id, post_request=post, issue_worker=issue_worker)
                 with factory() as db:
                     checks = run_business.score(case, statuses, observations, db)
-                return {"case_id": case["case_id"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
+                if restart_before_decision:
+                    checks["api_restarted_before_decision"] = restarted
+                return {"case_id": case["case_id"], "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, "http_statuses": statuses, "api_restarted_before_decision": restarted, "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
             finally:
                 process.terminate()
                 try:
@@ -126,6 +136,7 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case-id", help="Run one development case for integration diagnosis")
+    parser.add_argument("--restart-before-decision", action="store_true", help="Restart the isolated API after proposal and before supervisor decision")
     args = parser.parse_args()
     admin_url = os.environ.get("BUSINESS_PG_ADMIN_URL", "")
     parts = urlsplit(admin_url)
@@ -136,6 +147,8 @@ def main() -> None:
         cases = [case for case in cases if case["case_id"] == args.case_id]
         if not cases:
             raise RuntimeError("Unknown business case ID")
+    if args.restart_before_decision and [case["case_id"] for case in cases] != ["business-approved-refund"]:
+        raise RuntimeError("--restart-before-decision requires --case-id business-approved-refund")
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-oidc-" + uuid4().hex[:6]
     report_dir = ROOT / "evals/reports" / run_id
     report_dir.mkdir(parents=True, exist_ok=False)
@@ -143,13 +156,13 @@ def main() -> None:
     results = []
     for index, case in enumerate(cases, start=1):
         try:
-            result = run_case(case, run_id, index, admin_url, tokens, report_dir)
+            result = run_case(case, run_id, index, admin_url, tokens, report_dir, args.restart_before_decision)
         except Exception as exc:
             result = {"case_id": case["case_id"], "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)[:180]}
         results.append(result)
         print(f"{case['case_id']}: {result['status']}", flush=True)
-    summary = {"run_id": run_id, "suite": "business_workflows_v2_oidc_postgres", "cases": len(results), "pass": sum(row["status"] == "pass" for row in results), "fail": sum(row["status"] == "fail" for row in results), "incomplete": sum(row["status"] == "incomplete" for row in results), "gate_pass": all(row["status"] == "pass" for row in results), "report": str(report_dir)}
-    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(run_business.DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "model": "none"}, indent=2) + "\n", encoding="utf-8")
+    summary = {"run_id": run_id, "suite": "business_workflows_v2_oidc_postgres", "cases": len(results), "pass": sum(row["status"] == "pass" for row in results), "fail": sum(row["status"] == "fail" for row in results), "incomplete": sum(row["status"] == "incomplete" for row in results), "gate_pass": all(row["status"] == "pass" for row in results), "api_restart_requested": args.restart_before_decision, "report": str(report_dir)}
+    (report_dir / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(run_business.DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "auth_mode": "real-Keycloak-OIDC-code-PKCE", "database": "fresh-migrated-PostgreSQL-per-case", "worker": "fresh-subprocess-per-step", "api_restart_before_decision": args.restart_before_decision, "model": "none"}, indent=2) + "\n", encoding="utf-8")
     (report_dir / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (report_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary))

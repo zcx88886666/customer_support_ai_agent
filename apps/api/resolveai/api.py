@@ -126,6 +126,12 @@ def proposal(return_id: str, actor: Principal = Depends(principal), db: Session 
     actor.require("warehouse")
     with db.begin():
         result = d.create_proposal(db, return_id, datetime.now(timezone.utc))
+    from .approval_checkpoint import reconcile_stale_approval_wait, start_approval_wait
+    if result.status == "pending":
+        start_approval_wait(db, result.id)
+        stale_ids = db.scalars(select(m.RefundProposal.id).where(m.RefundProposal.return_id == return_id, m.RefundProposal.status == "stale")).all()
+        for stale_id in stale_ids:
+            reconcile_stale_approval_wait(db, stale_id)
     return {"id": result.id, "status": result.status, "amount_cents": result.amount_cents}
 
 
@@ -151,6 +157,8 @@ def decision(proposal_id: str, body: DecisionInput, actor: Principal = Depends(p
     actor.require("supervisor")
     with db.begin():
         result = d.decide_proposal(db, actor.subject, proposal_id, body.approve, datetime.now(timezone.utc))
+    from .approval_checkpoint import resume_approval_wait
+    resume_approval_wait(db, proposal_id)
     return {"id": result.id, "decision": result.decision}
 
 

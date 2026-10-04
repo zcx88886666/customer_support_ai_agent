@@ -79,6 +79,8 @@ For a full mock HTTP replay on the seeded local database, run `.venv/bin/python 
 
 An approval can become stale if relevant order facts change. Calling the proposal endpoint again after such a change marks the old proposal stale and creates a new one requiring a new approval. All amounts are integer CNY cents calculated from the recorded paid allocation. The system does not automatically decide damaged goods, delivery disputes, complex payment splits, or exceptions to the demonstrated return policy.
 
+On PostgreSQL, the proposal endpoint also saves a [LangGraph supervisor wait checkpoint](docs/implementation/approval-interrupt-2026-10-03.md). The authenticated decision endpoint resumes it after the SQL decision commits; stale replacement proposals close the old wait. The graph rereads SQL facts and cannot authorize or issue money from a resume payload. SQLite mock mode keeps the same SQL approval and refund rules without a durable approval checkpoint.
+
 ## Verification
 
 ```bash

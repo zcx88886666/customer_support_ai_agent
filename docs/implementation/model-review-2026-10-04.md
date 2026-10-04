@@ -13,7 +13,7 @@ Earlier calibrations are preserved only in ignored local packets. v1 and v2 word
 ## Human review and resume
 
 1. Review `review_cases.jsonl` and each `source_path` against [criteria v3](eval-review-criteria-v3.md), without reading `model_review/` first. Fill `reviewer_a.csv` with your human identity, `accept|revise|reject|needs_context`, reasons, optional complete corrected gold JSON, and UTC timestamp.
-2. After the OpenRouter key limit and account credit are increased, resume the exact model and rubric with `.venv/bin/python scripts/run_model_review.py evals/review_packets/20261004T211845Z --max-cost-usd 30`. Saved reviews are skipped. The runner clears the payment blocker after the next successful response.
+2. To resume this historical Astra Pro stream, explicitly select its model: `.venv/bin/python scripts/run_model_review.py evals/review_packets/20261004T211845Z --model openai/gpt-6-astra-pro --max-cost-usd 30`. Saved reviews are skipped. A separate, cheaper DeepSeek stream is documented in [its own report](model-review-deepseek-2026-10-04.md).
 3. Run the same command with `--refresh-only` to rebuild `human_model_disagreements.csv` from saved reviews without any API call. Resolve disagreements by human adjudication and record the result in `adjudication.csv`; do not copy model labels directly into source gold.
 
 The v6 release criterion still requires **two human reviewers for every critical case** and at least 20% of normal cases. The AI pass is an additional diagnostic review. All packet cases remain `dev`, and existing fixture groups still cannot form a leakage-safe locked partition, so the locked release gate is false even after model review finishes.

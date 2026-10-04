@@ -68,6 +68,7 @@ def test_refresh_only_never_loads_api_key(tmp_path, monkeypatch):
     monkeypatch.setattr(run_model_review, "load_key", forbidden_key)
     monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--refresh-only"])
     assert run_model_review.main() == 0
-    manifest = json.loads((packet / "model_review/manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((packet / "model_review_deepseek_v32/manifest.json").read_text(encoding="utf-8"))
     assert manifest["reviewed"] == 0 and manifest["pending"] == 162
-    assert (packet / "model_review/human_model_disagreements.csv").exists()
+    assert manifest["model"] == "deepseek/deepseek-v3.2"
+    assert (packet / "model_review_deepseek_v32/human_model_disagreements.csv").exists()

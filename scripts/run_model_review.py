@@ -28,6 +28,12 @@ from resolveai.prompts import PromptRegistry, ROOT
 from resolveai.seed import seed_demo
 
 
+MODEL_OPTIONS = {
+    "deepseek/deepseek-v3.2": {"input_per_m": 0.2088, "output_per_m": 0.3096,
+                                "output_name": "model_review_deepseek_v32", "default_max_cost_usd": 0.30},
+    "openai/gpt-6-astra-pro": {"input_per_m": 10.0, "output_per_m": 50.0,
+                                "output_name": "model_review", "default_max_cost_usd": 30.0},
+}
 MODEL = "openai/gpt-6-astra-pro"
 PROMPT_RELEASE = "review-v1"
 CRITERIA = ROOT / "docs/implementation/eval-review-criteria-v3.md"
@@ -281,12 +287,21 @@ def export(packet: Path, cases: list[dict], results: dict[str, dict], output: Pa
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("packet", type=Path, help="Ignored packet created by prepare_minimum_review.py")
+    parser.add_argument("--model", choices=tuple(MODEL_OPTIONS), default="deepseek/deepseek-v3.2",
+                        help="Pinned reviewer model; each model writes to a separate output directory")
     parser.add_argument("--limit", type=int, default=0, help="Max new cases this invocation; zero means all")
     parser.add_argument("--case-id", action="append", default=[], help="Review only selected IDs, repeatable")
     parser.add_argument("--refresh-only", action="store_true", help="Rebuild comparison outputs from saved reviews without an API call or key")
-    parser.add_argument("--max-cost-usd", type=float, default=30.0, help="Stop before next request when cumulative spend reaches this cap")
+    parser.add_argument("--max-cost-usd", type=float, help="Stop before next request when cumulative spend reaches this cap")
     parser.add_argument("--max-tokens", type=int, default=3000)
     args = parser.parse_args()
+    global MODEL, PRICE_INPUT_PER_M, PRICE_OUTPUT_PER_M
+    MODEL = args.model
+    choice = MODEL_OPTIONS[MODEL]
+    PRICE_INPUT_PER_M = choice["input_per_m"]
+    PRICE_OUTPUT_PER_M = choice["output_per_m"]
+    if args.max_cost_usd is None:
+        args.max_cost_usd = choice["default_max_cost_usd"]
     if args.limit < 0 or args.max_cost_usd <= 0 or args.max_tokens <= 0:
         parser.error("limit, cost cap and max tokens must be valid positive bounds")
     packet = args.packet.resolve()
@@ -299,12 +314,13 @@ def main() -> int:
     _source_hashes = {source["path"]: source["sha256"] for source in packet_manifest["source_datasets"]}
     prompt = PromptRegistry(PROMPT_RELEASE).get("eval_case_review")
     criteria_hash = sha256(CRITERIA)
-    output = packet / "model_review"
+    output = packet / choice["output_name"]
     output.mkdir(exist_ok=True)
     result_dir = output / "cases"
     result_dir.mkdir(exist_ok=True)
     identity = {"packet_sha256": sha256(packet_path), "criteria_sha256": criteria_hash,
                 "prompt_release_id": PROMPT_RELEASE, "prompt_sha256": prompt["sha256"], "model": MODEL,
+                "list_price_input_per_m": PRICE_INPUT_PER_M, "list_price_output_per_m": PRICE_OUTPUT_PER_M,
                 "seed_code_sha256": sha256(ROOT / "apps/api/resolveai/seed.py"),
                 "core_runner_sha256": sha256(ROOT / "evals/runners/run_core_business.py"),
                 "business_runner_sha256": sha256(ROOT / "evals/runners/run_business.py"),
@@ -313,7 +329,8 @@ def main() -> int:
     previous = {}
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if any(previous.get(key) != value for key, value in identity.items()):
+        if any(previous.get(key) != value for key, value in identity.items()
+               if key in previous or not key.startswith("list_price_")):
             raise ValueError("Existing model review belongs to a different packet, prompt, model or schema")
         if previous.get("inference_sha256") and previous["inference_sha256"] != inference_fingerprint():
             raise ValueError("Review inference implementation changed; use a new packet")

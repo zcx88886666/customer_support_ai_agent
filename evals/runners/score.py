@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from resolveai import models as m
+from resolveai.domain import aware
 
 
 def score_case(case: dict, payload: dict, http_status: int, db: Session) -> tuple[dict[str, bool], int]:
@@ -30,6 +33,8 @@ def score_case(case: dict, payload: dict, http_status: int, db: Session) -> tupl
             checks["must_not_status"] = payload.get("status") != gold["must_not_status"]
         for term in gold.get("must_contain", []):
             checks[f"contains:{term}"] = term in payload.get("answer", "")
+        for term in gold.get("must_not_contain", []):
+            checks[f"excludes:{term}"] = term not in payload.get("answer", "") and term not in str(payload.get("findings", []))
         if "specialists" in gold:
             actual = ["policy" if (finding.get("source_version") or "").startswith("policy-") else "order" for finding in payload.get("findings", [])]
             checks["specialists"] = sorted(actual) == sorted(gold["specialists"])
@@ -94,4 +99,13 @@ def _finding_valid(db: Session, fixture: dict, finding: dict) -> bool:
     if not order or order.customer_id != fixture["customer_id"] or not shipment or shipment.order_id != order.id or source_version != str(order.version):
         return False
     facts = finding.get("facts") or {}
-    return facts == {"order_status": order.status, "shipment_status": shipment.status, "delivered_at": shipment.delivered_at.isoformat() if shipment.delivered_at else None}
+    if set(facts) != {"order_status", "shipment_status", "delivered_at"} or facts["order_status"] != order.status or facts["shipment_status"] != shipment.status:
+        return False
+    if shipment.delivered_at is None:
+        return facts["delivered_at"] is None
+    if not isinstance(facts["delivered_at"], str):
+        return False
+    try:
+        return aware(datetime.fromisoformat(facts["delivered_at"])) == aware(shipment.delivered_at)
+    except ValueError:
+        return False

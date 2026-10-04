@@ -23,16 +23,22 @@ else:
     from run_smoke import run_case
 
 
-DATASET = ROOT / "evals/datasets/collaboration_dev_v1.jsonl"
+DATASETS = {
+    "composite": ROOT / "evals/datasets/collaboration_dev_v1.jsonl",
+    "single_domain": ROOT / "evals/datasets/collaboration_single_dev_v1.jsonl",
+}
 
 
-def load_cases() -> list[dict]:
-    cases = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines() if line.strip()]
+def load_cases(dataset, suite: str) -> list[dict]:
+    cases = [json.loads(line) for line in dataset.read_text(encoding="utf-8").splitlines() if line.strip()]
     ids = [case["case_id"] for case in cases]
     if len(cases) != 20 or len(set(ids)) != 20:
-        raise ValueError("Collaboration development set needs 20 unique cases")
+        raise ValueError(f"Collaboration {suite} development set needs 20 unique cases")
+    allowed_specialists = {("order", "policy")} if suite == "composite" else {("order",), ("policy",)}
+    expected_suite = "collaboration_dev_v1" if suite == "composite" else "collaboration_single_dev_v1"
     for case in cases:
-        if case["schema_version"] != "v1" or case["split"] != "dev" or sorted(case["gold"].get("specialists", [])) != ["order", "policy"]:
+        specialists = tuple(sorted(case["gold"].get("specialists", [])))
+        if case["schema_version"] != "v1" or case["split"] != "dev" or case["suite"] != expected_suite or specialists not in allowed_specialists:
             raise ValueError(f"Invalid collaboration case {case['case_id']}")
     return cases
 
@@ -49,17 +55,19 @@ def percentile(values: list[float], fraction: float) -> float | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("mock", "live"), default="mock")
+    parser.add_argument("--suite", choices=tuple(DATASETS), default="composite")
     parser.add_argument("--seed", type=int, default=20261004)
     args = parser.parse_args()
     if args.mode == "live":
         load_local_key()
     else:
         os.environ["OPENROUTER_API_KEY"] = ""
-    cases = load_cases()
+    dataset = DATASETS[args.suite]
+    cases = load_cases(dataset, args.suite)
     rng = random.Random(args.seed)
     model = ModelRegistry().get("intent").model if args.mode == "live" else "deterministic-mock"
     release = PromptRegistry("release-v1")
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-collab-" + args.mode + "-" + uuid4().hex[:6]
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-collab-" + args.suite.replace("_", "-") + "-" + args.mode + "-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
     folder.mkdir(parents=True, exist_ok=False)
     results = []
@@ -102,8 +110,8 @@ def main() -> None:
         for mode in ("single", "collab"):
             selected = [row for row in results if row["agent_mode"] == mode and family_by_case[row["case_id"]] == family]
             by_family[family][mode] = {"pass": sum(row["status"] == "pass" for row in selected), "total": len(selected)}
-    summary = {"run_id": run_id, "suite": "collaboration_dev_v1", "mode": args.mode, "model": model, "unique_cases": len(cases), "executions": len(results), "by_mode": by_mode, "by_family": by_family, "paired_outcomes": dict(outcomes), "critical_failures": [row["case_id"] + ":" + row["agent_mode"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"], "gate_pass": all(row["status"] == "pass" for row in results)}
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "source": "author-written synthetic development composites", "execution_order_seed": args.seed, "execution_order": execution_order, "prompt_release_id": "release-v1", "prompt_hashes": release.manifest["prompts"], "model": model, "scorer_version": "smoke-v2", "database": "fresh-SQLite-per-execution"}
+    summary = {"run_id": run_id, "suite": cases[0]["suite"], "mode": args.mode, "model": model, "unique_cases": len(cases), "executions": len(results), "by_mode": by_mode, "by_family": by_family, "paired_outcomes": dict(outcomes), "critical_failures": [row["case_id"] + ":" + row["agent_mode"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"], "gate_pass": all(row["status"] == "pass" for row in results)}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(), "source": "author-written synthetic development cases", "execution_order_seed": args.seed, "execution_order": execution_order, "prompt_release_id": "release-v1", "prompt_hashes": release.manifest["prompts"], "model": model, "scorer_version": "smoke-v2", "database": "fresh-SQLite-per-execution"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "pairs.jsonl").write_text("".join(json.dumps(pair, ensure_ascii=False) + "\n" for pair in pairs), encoding="utf-8")

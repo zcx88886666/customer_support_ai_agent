@@ -36,6 +36,16 @@ def test_scorer_rejects_unissued_claim_and_foreign_or_forged_sources(db):
     assert not checks["evidence_owned_and_current"]
 
 
+def test_scorer_compares_delivery_instants_across_timezone_formats(db):
+    shipment = db.get(m.Shipment, "demo-shipment-01")
+    valid = {"status": "ok", "source_version": "1", "source_ids": ["demo-order-01", shipment.id], "facts": {"order_status": "paid", "shipment_status": "delivered", "delivered_at": d.aware(shipment.delivered_at).isoformat()}}
+    checks, _ = score_case(case({"ledger_count": 0}), {"status": "answered", "answer": "", "findings": [valid]}, 200, db)
+    assert checks["evidence_owned_and_current"]
+    valid["facts"]["delivered_at"] = (d.aware(shipment.delivered_at) + timedelta(hours=1)).isoformat()
+    checks, _ = score_case(case({"ledger_count": 0}), {"status": "answered", "answer": "", "findings": [valid]}, 200, db)
+    assert not checks["evidence_owned_and_current"]
+
+
 def test_scorer_rejects_unapproved_ledger_even_when_count_matches(db):
     request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1, "scorer case", True, "scorer-unapproved", AT)
     d.record_receipt(db, "warehouse-test", request.id, 1, AT + timedelta(hours=1))

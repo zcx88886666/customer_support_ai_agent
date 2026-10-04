@@ -36,6 +36,7 @@ class AgentState(TypedDict, total=False):
     dispatch_tasks: list[dict]
     reuse_findings: dict[str, dict]
     findings: Annotated[list[dict], operator.add]
+    verified_findings: list[dict]
     answer: str
     status: str
     replan_reason: str
@@ -196,7 +197,17 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
         shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
         if shipment is None or finding.source_version != str(order.version) or finding.source_ids != [order.id, shipment.id]:
             return False
-        return finding.facts.get("order_status") == order.status and finding.facts.get("shipment_status") == shipment.status and finding.facts.get("delivered_at") == (shipment.delivered_at.isoformat() if shipment.delivered_at else None)
+        reported_delivery = finding.facts.get("delivered_at")
+        if shipment.delivered_at is None:
+            delivery_matches = reported_delivery is None
+        elif not isinstance(reported_delivery, str):
+            delivery_matches = False
+        else:
+            try:
+                delivery_matches = d.aware(datetime.fromisoformat(reported_delivery)) == d.aware(shipment.delivered_at)
+            except ValueError:
+                delivery_matches = False
+        return finding.facts.get("order_status") == order.status and finding.facts.get("shipment_status") == shipment.status and delivery_matches
     return False
 
 
@@ -352,6 +363,13 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
                 return {"status": "replan", "replan_reason": "order_changed"}
         elif d.active_policy(db).id != state["bundle_id"]:
             return {"status": "replan", "replan_reason": "policy_changed"}
+        public_findings = [finding.model_dump(mode="json") for _, finding in validated]
+        for raw in state.get("findings", []):
+            finding = SpecialistFinding.model_validate(raw)
+            task = tasks.get(finding.task_id)
+            if task and finding.plan_revision == state["plan_revision"] and finding.status in {"error", "incomplete"} and not finding.facts and not finding.source_ids:
+                marker = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status=finding.status, queried_at=finding.queried_at, unresolved=["specialist_unavailable" if finding.status == "error" else "evidence_incomplete"], tool_calls=finding.tool_calls)
+                public_findings.append(marker.model_dump(mode="json"))
         pieces = []
         for role, finding in validated:
             if role == "order":
@@ -372,7 +390,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             pieces.append(say("投诉已转人工处理。", "I have referred your complaint to a human support agent."))
         if not pieces:
             pieces.append(say("请补充问题或联系人工客服。", "Please add more detail or contact a human support agent."))
-        return {"status": "answered", "answer": " ".join(pieces) if language == "en" else "".join(pieces)}
+        return {"status": "answered", "answer": " ".join(pieces) if language == "en" else "".join(pieces), "verified_findings": public_findings}
 
     graph = StateGraph(AgentState)
     graph.add_node("route", route)
@@ -457,7 +475,7 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
                 graph = build_coordinator(db, customer_id, body.agent_mode, checkpointer, access_token, language)
                 state = graph.invoke({"thread_id": body.thread_id, "customer_id": customer_id, "text": safe_scope(body.message), "route_candidate": decision.model_dump(), "order_id": order_id, "shipment_id": shipment_id, "plan_revision": revision, "mode": body.agent_mode, "findings": [], "reuse_findings": reuse_findings}, config={"configurable": {"thread_id": f"{customer_id}:{body.thread_id}:t{task_id}:r{revision}"}})
             if state.get("status") != "replan":
-                result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("findings", []), "agent_mode": body.agent_mode, "replan_count": replan_count}
+                result = {"status": state.get("status"), "answer": state.get("answer"), "route": state.get("route"), "plan_revision": revision, "findings": state.get("verified_findings", []), "agent_mode": body.agent_mode, "replan_count": replan_count}
                 break
             if replan_count >= 2 or revision >= 4:
                 result = {"status": "handoff", "answer": say("业务事实持续变化，已转人工处理。", "The verified business facts kept changing. I have referred this to a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": [], "agent_mode": body.agent_mode, "replan_count": replan_count}

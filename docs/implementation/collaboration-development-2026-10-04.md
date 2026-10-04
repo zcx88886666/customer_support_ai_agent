@@ -8,6 +8,8 @@ The final live report `evals/reports/20261004T092728Z-collab-live-d7529e/` passe
 
 This set was authored while implementing the system and refined after inspecting failures. It is a useful regression fixture, **not independently reviewed locked gold**. Similar questions share templates and seeded orders; 20 rows are not 20 independent customer conversations. The single/collab success tie and small latency difference do not establish a production quality or performance advantage. The v6 target also calls for single-domain and fault/conflict collaboration cases, broader terminal-state gold, human review, and locked paired evaluation; those remain open.
 
+The `single` path currently runs the same read-only specialist logic sequentially; `collab` fans out the tasks. This paired result measures dispatch and execution behavior for those paths, not quality differences between separate reasoning models. A [separate single-domain suite](collaboration-single-domain-2026-10-04.md) now checks over-dispatch; fault/conflict paired cases remain open.
+
 ```bash
 .venv/bin/python evals/runners/run_collaboration.py --mode mock
 .venv/bin/python evals/runners/run_collaboration.py --mode live --seed 20261004

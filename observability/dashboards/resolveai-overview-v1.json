@@ -1,0 +1,42 @@
+{
+  "name": "ResolveAI development overview v1",
+  "description": "Uploaded and sampled development telemetry only. Local evaluation reports remain authoritative.",
+  "widgets": [
+    {
+      "name": "ResolveAI v1 · Root observations",
+      "description": "Uploaded root observations; this is not the complete local evaluation denominator.",
+      "view": "observations",
+      "dimensions": [],
+      "metrics": [{"measure": "count", "agg": "count"}],
+      "filters": [{"column": "isRootObservation", "operator": "=", "type": "boolean", "value": true}],
+      "chartType": "NUMBER"
+    },
+    {
+      "name": "ResolveAI v1 · Generation cost",
+      "description": "Provider-reported cost on uploaded generation observations, in USD.",
+      "view": "observations",
+      "dimensions": [],
+      "metrics": [{"measure": "totalCost", "agg": "sum"}],
+      "filters": [{"column": "type", "operator": "=", "type": "string", "value": "GENERATION"}],
+      "chartType": "NUMBER"
+    },
+    {
+      "name": "ResolveAI v1 · HTTP P95 latency",
+      "description": "P95 latency in milliseconds for uploaded http.request observations.",
+      "view": "observations",
+      "dimensions": [],
+      "metrics": [{"measure": "latency", "agg": "p95"}],
+      "filters": [{"column": "name", "operator": "=", "type": "string", "value": "http.request"}],
+      "chartType": "NUMBER"
+    },
+    {
+      "name": "ResolveAI v1 · Task success score",
+      "description": "Average uploaded task_success score; inspect local summary.json for release gates.",
+      "view": "scores-numeric",
+      "dimensions": [],
+      "metrics": [{"measure": "value", "agg": "avg"}],
+      "filters": [{"column": "name", "operator": "=", "type": "string", "value": "task_success"}],
+      "chartType": "NUMBER"
+    }
+  ]
+}

@@ -16,6 +16,8 @@ The first stale-proposal replay passed its business scorer but showed the old ch
 
 An additional [post-commit failure verifier](../../scripts/verify_approval_checkpoint_failure_postgres.py) used a fresh synthetic database `ra_approval_recovery_ad5955523a42`. It injected one exception after proposal commit but before wait-checkpoint creation, and one after supervisor decision commit but before resume. Both HTTP calls returned 500. Retrying the same idempotent endpoints restored the pending and completed checkpoints. The worker then issued exactly one correct ledger row; a second worker run issued none. **5/5 checks passed.** The verifier's first attempt reached the worker check but failed because it expected a dictionary instead of the worker's actual list return; the assertion was corrected and the clean rerun passed.
 
+After these endpoint changes, the complete six-case business-v2 suite was rerun with real Keycloak OIDC tokens and fresh migrated PostgreSQL databases. **6/6 passed, zero incomplete**, with the ignored report at `evals/reports/20261004T014105Z-oidc-80a89e/`. This covers the unaffected inspection, ownership, missing-confirmation, and expired-window cases as well as approval and stale replacement.
+
 Reproduce the focused checks:
 
 ```bash

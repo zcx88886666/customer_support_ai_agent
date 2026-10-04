@@ -1,0 +1,17 @@
+{
+  "release_id": "review-v1",
+  "source_git_commit": "4c85a5507b0a381739fc526cce9910fe511b4127",
+  "verified": true,
+  "schema_version": "v1",
+  "model_registry_version": "review-v1",
+  "created_at": "2026-10-04T12:14:17.623200+00:00",
+  "prompts": {
+    "coordinator": "b3010f48274bd1f581ef26aa51aecbdc83c63d8c28286ef6cf5279fcd7779fe1",
+    "intent_route": "5de8bcf40de5275b1f7d3333b1ee1161c5a4143f9a55cb503c4ecabc224b33b6",
+    "judge_clarity": "ff7bc5d9c0b59bb40ac2260eb097b78c25da9fbddf6f0e2470171ea7246fe303",
+    "order_logistics_agent": "5ff3b8a7cefe06930e8e08cee7dce10e74ced885c9239184f7fec75e3c7d81da",
+    "policy_agent": "562a85d81510fdcae80131d5f950e89797d334bdfa03f91f33576b4c09ff1395",
+    "synthesis": "53f2e868fa9bbb629dbc5296e3ec7e8720adf778aa59d348a8c28e0172b5e649",
+    "eval_case_review": "7392fa40e77ed4ee8e01213a86be4d6be53fc217946ebb7a32b74ce881559b49"
+  }
+}

@@ -17,15 +17,41 @@ from sqlalchemy.orm import Session
 from . import models as m
 
 
-SYNONYMS = {"我要退": "退货", "能退": "退货", "可以退": "退货", "没到": "未签收", "退款": "模拟退款", "七天": "七日"}
-INDEX_VERSION = "local-gram-v1"
+SYNONYMS = {
+    "我要退": "退货", "能退": "退货", "可以退": "退货", "可退": "退货", "没到": "未签收", "退款": "模拟退款", "七天": "七日",
+    "收到货": "签收", "寄回": "退回", "反悔": "无理由", "数字商品": "非实物", "虚拟产品": "非实物", "特别说明": "特殊商品",
+    "退件": "退货", "少了一件": "数量", "损坏": "商品状态", "复核": "质检", "数量不对": "数量", "原支付方式": "原路退款",
+    "钱何时回到": "模拟退款", "打款": "退款", "优惠后": "实付",
+}
+ENGLISH_SYNONYMS = (
+    (r"\bdigital goods\b", "非实物"),
+    (r"\bno-reason\b", "无理由"),
+    (r"\breturns?\b|\breturned\b", "退货"),
+    (r"\brefund(?:ed|s)?\b", "模拟退款"),
+    (r"\bdeliver(?:y|ed)\b", "签收"),
+    (r"\bproducts?\b|\bgoods\b", "商品"),
+    (r"\bwarehouse\b", "仓库"),
+    (r"\binspect(?:ed|ion)?\b", "质检"),
+    (r"\bpaid\b", "实付"),
+    (r"\bapproval\b|\bapproved\b", "主管批准"),
+)
+POLICY_SCOPE_CHINESE = ("退", "寄回", "签收", "质检", "仓库", "无理由", "七天", "七日", "批准", "打款", "实付", "收货后", "数量不对", "损坏", "原支付方式")
+POLICY_SCOPE_ENGLISH = re.compile(r"\b(return(?:s|ed)?|refund(?:s|ed)?|deliver(?:y|ed)|warehouse|inspect(?:ion|ed)?|approval|approved)\b")
+INDEX_VERSION = "local-gram-v2"
 VECTOR_DIMENSIONS = 128
+
+
+def in_policy_scope(query: str) -> bool:
+    lower = query.lower()
+    return any(word in lower for word in POLICY_SCOPE_CHINESE) or bool(POLICY_SCOPE_ENGLISH.search(lower))
 
 
 def terms(text: str) -> set[str]:
     normal = text.lower()
     for source, target in SYNONYMS.items():
         normal = normal.replace(source, target)
+    for pattern, target in ENGLISH_SYNONYMS:
+        normal = re.sub(pattern, target, normal)
     chinese = re.findall(r"[\u4e00-\u9fff]", normal)
     grams = {"".join(chinese[i:i + 2]) for i in range(len(chinese) - 1)}
     words = set(re.findall(r"[a-z]{3,}", normal))
@@ -106,6 +132,8 @@ def postgres_hits(db: Session, bundle_id: str, query: str, limit: int) -> list[m
 
 
 def retrieve(db: Session, bundle_id: str, query: str, limit: int = 5) -> list[m.PolicyClause]:
+    if not in_policy_scope(query):
+        return []
     if db.bind.dialect.name == "postgresql":
         return postgres_hits(db, bundle_id, query, limit)
     clauses = db.scalars(select(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle_id)).all()

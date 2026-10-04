@@ -37,6 +37,16 @@ def test_retrieval_stays_in_bundle_and_reports_no_match(db):
     assert retrieve(db, "policy-demo-v1", "火星天气", 5) == []
 
 
+def test_policy_retrieval_abstains_on_adjacent_product_questions(db):
+    assert retrieve(db, "policy-demo-v1", "这款商品现在还有现货吗？", 5) == []
+    assert retrieve(db, "policy-demo-v1", "你能证明这个商品是正品吗？", 5) == []
+
+
+def test_policy_retrieval_maps_clear_english_terms_to_published_clauses(db):
+    assert "clause-window" in [row.id for row in retrieve(db, "policy-demo-v1", "How many days after delivery can I return a product?", 5)]
+    assert "clause-refund" in [row.id for row in retrieve(db, "policy-demo-v1", "How is the paid amount refunded after approval?", 5)]
+
+
 def test_historical_policy_hash_drift_blocks_rollback(db):
     bundle = create_draft(db, "support-1", "policy-v4", 7, [{"id": "policy-v4:window", "title": "退货", "body": "合格商品签收次日起可申请退货。"}], datetime(2026, 10, 1, tzinfo=timezone.utc))
     index_and_verify(db, "supervisor-1", bundle.id)

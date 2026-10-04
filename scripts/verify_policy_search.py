@@ -3,6 +3,8 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
 from resolveai.db import SessionLocal
@@ -16,7 +18,7 @@ def main() -> None:
         assert db.bind.dialect.name == "postgresql", "PostgreSQL is required"
         try:
             revision = db.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "8a512e96af34", revision
+            assert revision == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head(), revision
             indexes = set(db.scalars(text("SELECT indexname FROM pg_indexes WHERE tablename='policy_clause_search'")))
             assert {"ix_policy_search_terms", "ix_policy_search_vector"} <= indexes
             count = db.scalar(text("SELECT count(*) FROM policy_clause_search WHERE bundle_id='policy-demo-v1'"))

@@ -188,6 +188,8 @@ PROMPT_RELEASE=specialists-dev-v1 .venv/bin/python evals/runners/run_paired_mode
 
 The second command uses the ignored OpenRouter key and paid GPT-4o-mini calls; the recorded six-case replay cost $0.000819. The new Langfuse prompt mirror is pending explicit approval after automatic approval review rejected its upload. Local inference and existing tracing continue without the new mirror; generations cannot link to its new Cloud prompt versions yet.
 
+The parent graph [merges duplicate findings by task/revision](docs/implementation/duplicate-dispatch-2026-10-05.md) and shares one read execution for repeated dispatches. `.venv/bin/python scripts/verify_specialist_transport.py --scenario duplicate_dispatch` uses the same real-Keycloak/PostgreSQL setup as the other transport probes and a free local model stub; omitting `--scenario` now runs ten cases.
+
 Set `OPENROUTER_API_KEY` to enable structured intent extraction and bounded specialist evidence review using the exact model ID in [the model registry](packages/agent/models-mock-v1.json). For Docker Compose, put `OPENROUTER_API_KEY=...` in a repository-root `.env` file (ignored by Git) with mode `600` and start with `docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api`. Do not paste the key into chat or command arguments. The deterministic mock remains the no-key path. One [live structured-intent request](docs/implementation/openrouter-integration-2026-10-02.md) and a separate two-specialist evidence review passed on GPT-4o-mini; broader model quality and cost benchmarks remain open.
 
 ### Langfuse Cloud

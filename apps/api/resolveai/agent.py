@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import operator
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, TypedDict
@@ -21,6 +20,7 @@ from .policy_retrieval import retrieve
 from .commerce_client import read_order, read_selected_order_tools, CommerceUnavailable
 from .memory import list_preferences
 from .db import session_read_lock
+from .delegation import TaskRuns, merge_findings
 from .request_budget import BudgetExceeded, BudgetLimits, RequestBudget, budget_scope, current_budget
 
 
@@ -38,7 +38,7 @@ class AgentState(TypedDict, total=False):
     tasks: list[dict]
     dispatch_tasks: list[dict]
     reuse_findings: dict[str, dict]
-    findings: Annotated[list[dict], operator.add]
+    findings: Annotated[list[dict], merge_findings]
     verified_findings: list[dict]
     answer: str
     status: str
@@ -321,6 +321,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
     policy_graph = build_policy_graph(db)
     order_graph = build_order_graph(db, customer_id, access_token)
     request_budget = current_budget() or RequestBudget()
+    task_runs = TaskRuns(request_budget, now=lambda: datetime.now(timezone.utc))
 
     def say(zh: str, en: str) -> str:
         return en if language == "en" else zh
@@ -384,8 +385,7 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             return "single"
         return [Send("specialist", {"tasks": [task], "findings": [], "bundle_id": state["bundle_id"], "order_id": state.get("order_id"), "shipment_id": state.get("shipment_id"), "order_version": state.get("order_version"), "plan_revision": state["plan_revision"], "thread_id": state["thread_id"], "customer_id": state["customer_id"], "text": state["text"], "intents": state["intents"], "route": state["route"], "status": state["status"], "mode": mode}) for task in state["dispatch_tasks"]]
 
-    def specialist(state: AgentState):
-        task = DelegationTask.model_validate(state["tasks"][0])
+    def execute_specialist(task: DelegationTask):
         with tracer().start_as_current_span("specialist." + task.specialist) as span:
             span.set_attribute("agent_role", task.specialist)
             span.set_attribute("task_id", task.task_id)
@@ -400,7 +400,11 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
                     finding = SpecialistFinding.model_validate(graph.invoke({"task": task.model_dump(mode="json")})["finding"])
                 if datetime.now(timezone.utc) > effective_deadline:
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["deadline_expired"])
-        return {"findings": [finding.model_dump(mode="json")]}
+        return finding.model_dump(mode="json")
+
+    def specialist(state: AgentState):
+        task = DelegationTask.model_validate(state["tasks"][0])
+        return {"findings": [task_runs.invoke(task, lambda: execute_specialist(task))]}
 
     def single(state: AgentState):
         findings = []

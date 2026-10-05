@@ -41,6 +41,32 @@ def child(kind: str, port: int, scenario: str):
         from resolveai import openrouter
         from resolveai.api import app
         openrouter.CHAT_COMPLETIONS_URL = os.environ["TRANSPORT_TEST_PROVIDER_URL"]
+        if scenario == "duplicate_dispatch":
+            from langgraph.graph import StateGraph
+            original_edges = StateGraph.add_conditional_edges
+            original_node = StateGraph.add_node
+
+            def duplicate_edges(graph, source, path, *args, **kwargs):
+                if source == "dispatch":
+                    original_path = path
+
+                    def duplicated(state):
+                        result = original_path(state)
+                        return result + result if isinstance(result, list) else result
+                    path = duplicated
+                return original_edges(graph, source, path, *args, **kwargs)
+
+            def duplicate_node(graph, name, action=None, *args, **kwargs):
+                if name == "single":
+                    original_action = action
+
+                    def duplicated(state):
+                        return original_action({**state, "dispatch_tasks": state["dispatch_tasks"] * 2})
+                    action = duplicated
+                return original_node(graph, name, action, *args, **kwargs)
+
+            StateGraph.add_conditional_edges = duplicate_edges
+            StateGraph.add_node = duplicate_node
     else:
         from services.commerce_mcp import server
         original = server.track_shipment
@@ -50,6 +76,8 @@ def child(kind: str, port: int, scenario: str):
             nonlocal calls
             calls += 1
             call_id = calls
+            if scenario == "duplicate_dispatch":
+                print(json.dumps({"event": "shipment_read", "call": call_id}), flush=True)
             if scenario == "mcp_slow" and call_id == 1:
                 print(json.dumps({"event": "slow_tool_started", "call": call_id}), flush=True)
                 try:
@@ -66,6 +94,18 @@ def child(kind: str, port: int, scenario: str):
 
         server.mcp.remove_tool("track_shipment")
         server.mcp.add_tool(track_shipment, name="track_shipment", description="Test-only shipment fault wrapper")
+        if scenario == "duplicate_dispatch":
+            original_order = server.get_order
+            order_calls = 0
+
+            def get_order(order_id: str) -> dict:
+                nonlocal order_calls
+                order_calls += 1
+                print(json.dumps({"event": "order_read", "call": order_calls}), flush=True)
+                return original_order(order_id)
+
+            server.mcp.remove_tool("get_order")
+            server.mcp.add_tool(get_order, name="get_order", description="Test-only order read counter")
         app = server.app
     uvicorn.run(app, host="127.0.0.1", port=port, access_log=False, log_level="warning")
 
@@ -194,6 +234,13 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
                     checks["attempt_accounted_with_unknown_usage"] = first["resource_usage"]["llm_attempts"] == 1 and first["resource_usage"]["unknown_usage_calls"] == 1 and first["resource_usage"]["pending_calls"] == 0
                     with provider.lock:
                         provider.trickle = False
+                elif scenario == "duplicate_dispatch":
+                    findings = first["findings"]
+                    checks["duplicate_results_merged_once"] = first["status"] == "answered" and len(findings) == 2 and len({finding["task_id"] for finding in findings}) == 2 and all(finding["status"] == "ok" for finding in findings)
+                    contents = (folder / f"{case_id}.mcp.log").read_text()
+                    checks["one_execution_per_commerce_tool"] = contents.count('"event": "order_read"') == contents.count('"event": "shipment_read"') == 1
+                    planning = "order_tool_plan" in PromptRegistry(env.get("PROMPT_RELEASE", "release-v1")).manifest["prompts"]
+                    checks["one_model_execution_per_specialist"] = first["resource_usage"]["llm_attempts"] == (4 if planning else 2) and first["resource_usage"]["pending_calls"] == 0
                 else:
                     checks["verified_policy_only"] = first["status"] == "answered" and any(finding["source_version"] == "policy-demo-v1" for finding in first["findings"]) and all(not finding["facts"] or "shipment_status" not in finding["facts"] for finding in first["findings"])
                     checks["acknowledged_missing_evidence"] = "部分证据未核实" in first["answer"]
@@ -226,7 +273,7 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
                 state = db.get(m.ThreadState, case_id).state
                 checks["late_result_did_not_replace_current_thread"] = state["status"] == recovered["status"] and state["task_id"] and state["plan_revision"] == recovered["plan_revision"]
             mcp_log.flush()
-            if scenario in {"mcp_slow", "mcp_contradiction"} and "order_tool_plan" in PromptRegistry(env.get("PROMPT_RELEASE", "release-v1")).manifest["prompts"]:
+            if scenario in {"mcp_slow", "mcp_contradiction", "duplicate_dispatch"} and "order_tool_plan" in PromptRegistry(env.get("PROMPT_RELEASE", "release-v1")).manifest["prompts"]:
                 with provider.lock:
                     schemas = {event.get("schema") for event in provider.events}
                 checks["both_specialist_planners_executed"] = {"OrderToolPlan", "PolicyRetrievalPlan"}.issubset(schemas)
@@ -252,7 +299,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--child", choices=("api", "mcp"), help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--scenario", choices=("llm_trickle", "mcp_slow", "mcp_contradiction", "sql_lock"))
+    parser.add_argument("--scenario", choices=("llm_trickle", "mcp_slow", "mcp_contradiction", "sql_lock", "duplicate_dispatch"))
     args = parser.parse_args()
     if args.child:
         child(args.child, args.port, args.scenario)
@@ -267,14 +314,14 @@ def main() -> int:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-transport-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
     folder.mkdir(parents=True)
-    manifest = {"run_id": run_id, "suite": "specialist-transport-v2", "split": "dev", "synthetic": True,
+    manifest = {"run_id": run_id, "suite": "specialist-transport-v3", "split": "dev", "synthetic": True,
                 "model": "local HTTP stub; no provider credit", "authentication": "real Keycloak code+PKCE",
                 "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "verifier_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     release = PromptRegistry(os.getenv("PROMPT_RELEASE", "release-v1"))
     manifest.update({"prompt_release_id": release.release_id, "prompt_hashes": release.manifest["prompts"]})
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    scenarios = [args.scenario] if args.scenario else ["llm_trickle", "mcp_slow", "mcp_contradiction", "sql_lock"]
+    scenarios = [args.scenario] if args.scenario else ["llm_trickle", "mcp_slow", "mcp_contradiction", "sql_lock", "duplicate_dispatch"]
     rows = []
     for scenario in scenarios:
         for mode in ("single", "collab"):

@@ -59,7 +59,7 @@ def read_marker(process: subprocess.Popen, timeout: float = 20) -> dict:
     return json.loads(line)
 
 
-def run_case(stage: str, admin_url: str, run_id: str, report_dir: Path) -> dict:
+def run_case(stage: str, admin_url: str, run_id: str, report_dir: Path, crash_server=None) -> dict:
     from resolveai import domain as d, models as m
     from resolveai.db import make_engine
     from resolveai.seed import seed_demo
@@ -106,13 +106,21 @@ def run_case(stage: str, admin_url: str, run_id: str, report_dir: Path) -> dict:
                 checks["uncommitted_ledger_invisible"] = db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
                 checks["uncommitted_action_audit_invisible"] = db.scalar(select(func.count()).select_from(m.AuditEvent).where(
                     m.AuditEvent.action == ("create_return" if stage == "return" else "issue_refund"))) == 0
+            if crash_server is not None:
+                if not all(checks.values()):
+                    raise RuntimeError("Crash preconditions were not observed")
+                # Close observer connections before the actual server crash;
+                # the child still holds its flushed, uncommitted transaction.
+                engine.dispose()
+                checks.update(crash_server(stage))
             process.kill()
             process.wait(timeout=10)
             checks["child_killed_by_sigkill"] = process.returncode == -signal.SIGKILL
             deadline = time.monotonic() + 10
             while True:
                 with factory() as db:
-                    alive = db.scalar(text("SELECT count(*) FROM pg_stat_activity WHERE pid = :pid"), {"pid": marker["backend_pid"]})
+                    alive = db.scalar(text("SELECT count(*) FROM pg_stat_activity WHERE pid = :pid AND application_name = :name"),
+                                      {"pid": marker["backend_pid"], "name": env["TRANSACTION_KILL_APP_NAME"]})
                 if alive == 0:
                     break
                 if time.monotonic() >= deadline:
@@ -167,6 +175,9 @@ def run_case(stage: str, admin_url: str, run_id: str, report_dir: Path) -> dict:
         failure = {"error_type": type(exc).__name__, "stack": [
             {"file": frame.filename, "line": frame.lineno, "function": frame.name}
             for frame in traceback.extract_tb(exc.__traceback__)]}
+        diagnostics = getattr(exc, "diagnostics", None)
+        if isinstance(diagnostics, dict):
+            failure["diagnostics"] = diagnostics
         (report_dir / f"{stage}.error.json").write_text(json.dumps(failure, indent=2) + "\n")
         return {"case_id": "transaction-kill-" + stage, "database": database, "status": "incomplete",
                 "checks": checks, "error_type": type(exc).__name__}

@@ -25,6 +25,13 @@ def make_app(namespace: str, database_url: str, broker_url: str) -> Celery:
     if not isinstance(namespace, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", namespace):
         raise ValueError("Invalid job namespace")
     url = make_url(database_url)
+    if url.get_backend_name() == "postgresql" and (
+        not url.host or not url.port or not url.database
+        or set(url.query) & {"service", "host", "hostaddr", "port", "dbname", "database"}
+    ):
+        # libpq defaults (including PGHOST/PGPORT/PGDATABASE and service files)
+        # can select different fixtures despite identical parsed URLs.
+        raise ValueError("Jobs require an explicit PostgreSQL host/port/database target")
     database = str(Path(url.database).resolve()) if url.get_backend_name() == "sqlite" and url.database else url.database
     identity = (url.get_backend_name(), url.host, url.port or (5432 if url.get_backend_name() == "postgresql" else None),
                 database, sorted(url.query.items()))

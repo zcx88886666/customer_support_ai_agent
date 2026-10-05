@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
+REPORT_ROOT = ROOT / 'evals/reports'
 for path in (ROOT, ROOT / 'apps/api', ROOT / 'packages'):
     sys.path.insert(0, str(path))
 
@@ -75,7 +76,7 @@ def stop_owned_process(process):
 
 def main():
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-celery-' + uuid4().hex[:6]
-    report = ROOT / 'evals/reports' / run_id
+    report = REPORT_ROOT / run_id
     report.mkdir(parents=True)
     pg_report = report / 'postgres'
     pg_report.mkdir()
@@ -87,6 +88,7 @@ def main():
     engine = app = None
     checks = {}
     error_type = None
+    completed = False
     cleanup = {}
     task_ids = []
     try:
@@ -252,7 +254,8 @@ def main():
             checks['final_alerts_and_audits_deduplicate'] = (
                 db.scalar(select(func.count()).select_from(m.RefundDeadlineAlert)) == 2
                 and db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action.like('refund_deadline_%'))) == 2)
-    except Exception as exc:
+        completed = True
+    except (Exception, KeyboardInterrupt) as exc:
         error_type = type(exc).__name__
         save_failure(report, exc)
     finally:
@@ -266,7 +269,7 @@ def main():
             engine.dispose()
         if app:
             app.close()
-        success = bool(checks and all(checks.values()) and not error_type)
+        success = bool(completed and checks and all(checks.values()) and not error_type)
         try:
             if redis_id:
                 info = json.loads(docker('inspect', redis_id))[0]
@@ -285,7 +288,8 @@ def main():
         except Exception as exc:
             error_type = type(exc).__name__
             save_failure(pg_report, exc)
-    passed = bool(checks and all(checks.values()) and not error_type)
+    checks['probe_completed'] = completed
+    passed = bool(completed and checks and all(checks.values()) and not error_type)
     manifest = {'run_id': run_id, 'suite': 'celery-jobs-v1', 'split': 'dev', 'synthetic': True,
                 'git_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                 'hashes': {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in (
@@ -300,7 +304,7 @@ def main():
     (report / 'case_results.jsonl').write_text(json.dumps(summary) + '\n')
     (report / 'report.html').write_text('<!doctype html><meta charset=utf-8><title>Celery jobs</title><pre>' + html.escape(json.dumps(summary, indent=2)) + '</pre>')
     print(json.dumps({**summary, 'report_dir': str(report)}))
-    return 0 if passed else 1
+    return 0 if passed else 130 if error_type == 'KeyboardInterrupt' else 1
 
 
 if __name__ == '__main__':

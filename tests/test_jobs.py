@@ -82,3 +82,17 @@ def test_different_database_workers_cannot_consume_same_queue(tmp_path):
 def test_invalid_namespace_rejects_startup(namespace):
     with pytest.raises(ValueError, match='namespace'):
         make_jobs(namespace, 'sqlite:///test.db')
+
+
+@pytest.mark.parametrize('url', [
+    'postgresql+psycopg://fixture_a@localhost',
+    'postgresql+psycopg://fixture_b@localhost',
+    'postgresql+psycopg://fixture@localhost:5432',
+    'postgresql+psycopg://fixture@/explicit_database',
+    'postgresql+psycopg://fixture@localhost/explicit_database',
+    'postgresql+psycopg://fixture@localhost:5432/database?service=other_fixture',
+    'postgresql+psycopg://fixture@localhost:5432/database?dbname=other_fixture',
+])
+def test_ambiguous_postgres_targets_reject_before_queue_creation(url):
+    with pytest.raises(ValueError, match='explicit.*target'):
+        make_jobs('same-namespace', url)

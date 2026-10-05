@@ -1,6 +1,6 @@
 # Controlled Redis/Celery jobs implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Deploy and verify isolated, bounded Celery refund/deadline/index jobs over Redis while retaining SQL authorization.
 
@@ -36,11 +36,14 @@
 - [x] Replace Compose polling command with worker, add Beat and Redis health/dependencies; preserve no-key startup.
 - [x] Run isolated real broker/worker/Beat verification including duplicates, wrong namespace, indexing, worker restart and broker outage recovery; inspect terminal SQL checks and resource cleanup.
 - [x] Run full Python suite, rebuild/start Docker services, verify worker readiness and seven OIDC/API/MCP checks.
-- [ ] Obtain one fresh read-only review, fix Critical/Important findings in one red→green pass and run required verification again.
-- [ ] Document actual outcomes and scope, run diff check, commit explicit files and record task completion.
+- [x] Obtain one fresh read-only review, fix Critical/Important findings in one red→green pass and run required verification again.
+- [x] Document actual outcomes and scope, run diff check, commit explicit files and record task completion.
 
 ## Ledger and rulings
 
 - Ruling: User's autonomous v6 instruction supplies design/plan execution authorization; no approval pause. Cost: assumptions must remain reviewable in this written design.
 - Ruling: Periodic SQL scans repair jobs rather than adding API transaction/outbox coupling. Cost: up to the configured polling interval for issuance when healthy.
 - Ruling: Published-policy periodic indexing establishes safe queue use; bulk evaluation/data/memory tasks remain explicitly open because they require different resource and scope contracts.
+
+- Final review: two Important findings fixed in one red→green pass. Explicit connection targets reject ambiguity; cancellation saves an incomplete report and preserves resources. No deferred Minors.
+- Final evidence: actual job probe `20261005T073124Z-celery-bcda5a`16/16; actual SIGINT probe `20261005T073128Z-celery-7eb01f` preserved stopped fixtures; full suite230passed4opt-in skips; deployed worker pong and OIDC7/7.

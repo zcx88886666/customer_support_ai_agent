@@ -12,7 +12,7 @@ Keeping the shell loop leaves the queue path unimplemented. Enqueuing directly f
 
 `resolveai.jobs:app` registers `resolveai.jobs.refunds`, `resolveai.jobs.deadlines`, and `resolveai.jobs.policy_index`, each with a required `namespace` argument and count-only return data. Refund and deadline schedules run every 30 seconds; index refresh every 300 seconds. Messages expire after 90 seconds. Prefork jobs have a 45-second soft and 60-second hard limit, late acknowledgement, worker-loss requeue, prefetch one and bounded technical SQL retries. Result storage is disabled. Worker concurrency is two. Each task creates and disposes its SQL engine in the executing child, avoiding inherited connections. No HTTP or MCP route exposes these tasks.
 
-Job namespace defaults to `dev`; invalid values fail startup. Redis broker URL is configured separately. Redis key prefix and queue identity include a hash of database host/port/name, excluding credentials. Different database workers cannot accidentally consume one another's jobs. One Beat instance uses a persistent Compose volume. Direct no-key local one-shot workers remain runnable without Redis.
+Job namespace defaults to `dev`; invalid values fail startup. PostgreSQL jobs require an explicit host, port and database and reject service/target query overrides, avoiding libpq environment-dependent targets. Redis broker URL is configured separately. Redis key prefix and queue identity include a hash of database host/port/name, excluding credentials. Different database workers cannot accidentally consume one another's jobs. One Beat instance uses a persistent Compose volume. Direct no-key local one-shot workers remain runnable without Redis.
 
 ## Verification and limits
 

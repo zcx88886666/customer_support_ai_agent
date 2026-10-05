@@ -30,7 +30,10 @@ def main():
     target = ROOT / "prompts/releases" / f"{args.release_id}.json"
     if target.exists():
         raise SystemExit("Release already exists; choose a new ID")
-    target.write_text(json.dumps({"release_id": args.release_id, "source_git_commit": commit, "verified": True, "schema_version": "v1", "model_registry_version": "mock-v1", "created_at": datetime.now(timezone.utc).isoformat(), "prompts": prompts}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    target.write_text(json.dumps({"release_id": args.release_id, "source_git_commit": commit, "verified": True,
+                                 "verification_scope": "development", "locked_release_pass": False,
+                                 "schema_version": "v1", "model_registry_version": "mock-v1",
+                                 "created_at": datetime.now(timezone.utc).isoformat(), "prompts": prompts}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(target)
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ReturnInput(BaseModel):
@@ -90,6 +90,32 @@ class DelegationTask(BaseModel):
     policy_bundle_id: str | None = None
     evidence_version_hint: int | None = None
     deadline: datetime
+    order_read_scope: Literal["status", "shipment"] = "shipment"
+
+
+class OrderToolPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tools: list[Literal["get_order", "track_shipment"]] = Field(max_length=2)
+
+    @field_validator("tools")
+    @classmethod
+    def unique_tools(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("Repeated tools are not allowed")
+        return value
+
+
+class PolicyRetrievalPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    queries: list[str] = Field(max_length=2)
+
+    @field_validator("queries")
+    @classmethod
+    def bounded_unique_queries(cls, value):
+        value = [query.strip() for query in value]
+        if any(not query or len(query) > 200 for query in value) or len(value) != len(set(value)):
+            raise ValueError("Queries must be nonempty, unique, and at most 200 characters")
+        return value
 
 
 class SpecialistFinding(BaseModel):

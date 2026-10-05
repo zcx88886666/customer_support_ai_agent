@@ -1,6 +1,8 @@
 {
   "version": "mock-v1",
   "tasks": {
+    "order_plan": {"model": "openai/gpt-4o-mini-2024-07-18", "prompt_name": "order_tool_plan", "timeout_seconds": 8, "max_tokens": 150, "temperature": 0, "provider_order": ["OpenAI"]},
+    "policy_plan": {"model": "openai/gpt-4o-mini-2024-07-18", "prompt_name": "policy_retrieval_plan", "timeout_seconds": 8, "max_tokens": 200, "temperature": 0, "provider_order": ["OpenAI"]},
     "intent": {"model": "openai/gpt-4o-mini-2024-07-18", "prompt_name": "intent_route", "timeout_seconds": 8, "max_tokens": 300, "temperature": 0, "provider_order": ["OpenAI"]},
     "policy_agent": {"model": "openai/gpt-4o-mini-2024-07-18", "prompt_name": "policy_agent", "timeout_seconds": 8, "max_tokens": 400, "temperature": 0, "provider_order": ["OpenAI"]},
     "order_agent": {"model": "openai/gpt-4o-mini-2024-07-18", "prompt_name": "order_logistics_agent", "timeout_seconds": 8, "max_tokens": 400, "temperature": 0, "provider_order": ["OpenAI"]},

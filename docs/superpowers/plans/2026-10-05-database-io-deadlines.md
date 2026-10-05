@@ -34,9 +34,9 @@
 
 - [x] Write failing contention and late-connect cleanup tests, socket timeout/invalidation tests, and checkpoint timeout/handoff/replay regressions. Expected: fail before the adapters exist.
 - [x] Implement minimal adapters and wire engine/saver; run focused tests. Expected: no connection leak, no shared timeout mutation, correct deadline exceptions.
-- [ ] Run real isolated PostgreSQL pool contention, checkpoint row lock, socket stall and fresh graph replay checks, plus full Python tests and rebuilt Docker OIDC/readiness. Expected: bounded waits, no unauthorized business mutations and reusable/fresh connections.
-- [ ] Obtain one fresh read-only final review; fix Critical/Important findings once with red→green tests.
-- [ ] Record measured limits and logs, diff check and explicit local commits.
+- [x] Run real isolated PostgreSQL pool contention, checkpoint row lock, socket stall and fresh graph replay checks, plus full Python tests and rebuilt Docker OIDC/readiness. Expected: bounded waits, no unauthorized business mutations and reusable/fresh connections.
+- [x] Obtain one fresh read-only final review; fix Critical/Important findings once with red→green tests.
+- [x] Record measured limits and logs, diff check and explicit local commits.
 
 ## Rulings
 
@@ -47,3 +47,5 @@
 - Ruling: Once I/O allowance is exhausted, discard the Session through public `invalidate()` instead of a network rollback — the real checkpoint-lock probe reproduced rollback failing under the expired budget. The driver closes locally; server rollback and fresh ownership revalidation govern the handoff. Cost: a healthy pooled connection is replaced on each resource-limit handoff.
 
 - Ruling: Preserve local SQLite rollback to retain in-memory worlds; only PostgreSQL uses local invalidation on expiry. Memory fixture regression RED→GREEN.
+
+- Review ruling: No Critical/Important finding; Minor omitted agent.py probe hash deferred for future manifest attribution. No extra fix/re-review pass. Documented DNS-slot/startup/final-commit/ambiguous-checkpoint limits accepted; independent focused11/11 and deployed readiness/OIDC7 recorded.

@@ -15,7 +15,7 @@ Actual checkpoint lock testing exposed an expired-budget rollback failure: the o
 - Full Python suite: **255 passed, four optional PostgreSQL/Docker skips**, in24.11seconds. Syntax compilation and git diff check passed.
 - Initial failed run `20261005T080819Z-db-deadline-8b89ab` preserves the actual rollback traceback, incomplete report and stopped owned server `ra_serverkill_7e61a7a3566f4583` with its owned data volume. Corrected run `20261005T081056Z-db-deadline-397897` also passed19checks before the SQLite compatibility refinement.
 
-Docker rebuild succeeded and seven OIDC/API/MCP checks passed on the new PostgreSQL guards; final rebuild/readiness and one fresh review are being completed.
+Final Docker rebuild, one worker pong and seven OIDC/API/MCP checks passed. Fresh review found no Critical or Important issue and independently passed all eleven focused tests. One Minor attribution gap is recorded for later work: the probe hashes four adapter/verifier files but omits the changed agent.py handoff implementation; its baseline HEAD therefore does not fully identify that uncommitted handoff source. The measured19/19 results remain valid. The reviewer declined new Docker/database/model/Cloud actions, deployment reruns and repeat review; the documented DNS-slot, startup/final-commit and ambiguous-checkpoint limits were accepted.
 
 ```bash
 PROMPT_RELEASE=specialists-dev-v1 .venv/bin/python -m pytest -q

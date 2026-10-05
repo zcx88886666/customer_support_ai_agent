@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import tempfile
 import time
 from collections import Counter
@@ -141,10 +142,10 @@ def main() -> None:
                "executions": len(results), "counts": dict(counts),
                "critical_failures": [row["case_id"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"],
                "development_pass": development_pass, "release_gate_pass": False}
-    registry = PromptRegistry("release-v1")
+    registry = PromptRegistry(os.getenv("PROMPT_RELEASE", "release-v1"))
     manifest = {"run_id": run_id, "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(),
                 "seed_clock": seed_clock.isoformat(), "source": "author-written synthetic development labels",
-                "prompt_release_id": "release-v1", "prompt_hashes": registry.manifest["prompts"],
+                "prompt_release_id": os.getenv("PROMPT_RELEASE", "release-v1"), "prompt_hashes": registry.manifest["prompts"],
                 "source_git_commit": registry.manifest.get("source_git_commit"), "model": "deterministic-mock",
                 "scorer_version": "intent-dialogue-dev-v1", "auth_mode": "mock", "database": "isolated-sqlite-per-case"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

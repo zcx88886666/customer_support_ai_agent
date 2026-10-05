@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from resolveai.api import app
+from resolveai.config import settings
 from resolveai.db import Base, get_db, make_engine
 from resolveai.prompts import PromptRegistry, ROOT
 from resolveai.seed import seed_demo
@@ -79,9 +80,11 @@ def run_case(case: dict, mode: str, run_id: str, seed_clock: datetime | None = N
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--release", default="release-v1")
+    parser.add_argument("--release", default=settings.prompt_release)
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
+    if args.release != settings.prompt_release:
+        parser.error("Set PROMPT_RELEASE to the requested --release before running so runtime and manifest agree")
     cases = load_cases()
     registry = PromptRegistry(args.release)
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:6]

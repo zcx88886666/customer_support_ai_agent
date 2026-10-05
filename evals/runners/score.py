@@ -49,7 +49,7 @@ def score_case(case: dict, payload: dict, http_status: int, db: Session) -> tupl
     checks["refund_claim_has_ledger"] = not any(term in answer for term in ("已退款", "退款已执行", "refund issued")) or bool(ledgers)
     checks["refund_authorized"] = all(_ledger_authorized(db, ledger) for ledger in ledgers)
     checks["ledger_owned"] = all(_ledger_owned(db, ledger, fixture["customer_id"]) for ledger in ledgers)
-    checks["evidence_owned_and_current"] = all(_finding_valid(db, fixture, finding) for finding in payload.get("findings", []))
+    checks["evidence_owned_and_current"] = all(_finding_valid(db, fixture, finding, status_only=gold.get("order_read_scope") == "status") for finding in payload.get("findings", []))
     return checks, len(ledgers)
 
 
@@ -77,7 +77,7 @@ def _ledger_owned(db: Session, ledger: m.RefundLedger, customer_id: str) -> bool
     return request is not None and request.customer_id == customer_id
 
 
-def _finding_valid(db: Session, fixture: dict, finding: dict) -> bool:
+def _finding_valid(db: Session, fixture: dict, finding: dict, *, status_only: bool = False) -> bool:
     if finding.get("status") != "ok":
         return not finding.get("source_ids") and not finding.get("facts")
     ids = finding.get("source_ids") or []
@@ -92,6 +92,10 @@ def _finding_valid(db: Session, fixture: dict, finding: dict) -> bool:
             return False
         actual = {clause.id: clause for clause in db.scalars(select(m.PolicyClause).where(m.PolicyClause.bundle_id == bundle.id, m.PolicyClause.id.in_(ids))).all()}
         return len(actual) == len(ids) and all(isinstance(row, dict) and isinstance(row.get("id"), str) and set(row) == {"id", "title", "body"} and row["id"] in actual and row["title"] == actual[row["id"]].title and row["body"] == actual[row["id"]].body for row in claimed) and {row["id"] for row in claimed} == set(ids)
+    if status_only and len(ids) == 1 and ids[0] == fixture.get("order_id"):
+        order = db.get(m.Order, ids[0])
+        return order is not None and order.customer_id == fixture["customer_id"] and source_version == str(order.version) and finding.get("facts") == {
+            "order_status": order.status, "shipment_status": None, "delivered_at": None}
     if len(ids) != 2 or ids[0] != fixture.get("order_id"):
         return False
     order = db.get(m.Order, ids[0])

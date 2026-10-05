@@ -27,7 +27,7 @@ services:
       OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/resolveai}
       OIDC_AUDIENCE: resolveai-api
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/resolveai/protocol/openid-connect/certs}
-      PROMPT_RELEASE: release-v1
+      PROMPT_RELEASE: ${PROMPT_RELEASE:-specialists-dev-v1}
       COMMERCE_MCP_URL: http://mcp:8001/mcp
       MCP_AUDIENCE: http://localhost:8001/mcp
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

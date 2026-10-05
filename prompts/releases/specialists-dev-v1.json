@@ -1,0 +1,21 @@
+{
+  "release_id": "specialists-dev-v1",
+  "source_git_commit": "c526de63411ab0cbdde66579867da1e41e9145be",
+  "verified": true,
+  "verification_scope": "development",
+  "locked_release_pass": false,
+  "schema_version": "v1",
+  "model_registry_version": "mock-v1",
+  "created_at": "2026-10-05T00:15:07.882411+00:00",
+  "prompts": {
+    "coordinator": "b3010f48274bd1f581ef26aa51aecbdc83c63d8c28286ef6cf5279fcd7779fe1",
+    "eval_case_review": "7392fa40e77ed4ee8e01213a86be4d6be53fc217946ebb7a32b74ce881559b49",
+    "intent_route": "5de8bcf40de5275b1f7d3333b1ee1161c5a4143f9a55cb503c4ecabc224b33b6",
+    "judge_clarity": "ff7bc5d9c0b59bb40ac2260eb097b78c25da9fbddf6f0e2470171ea7246fe303",
+    "order_logistics_agent": "5ff3b8a7cefe06930e8e08cee7dce10e74ced885c9239184f7fec75e3c7d81da",
+    "order_tool_plan": "a313a952738604e099b11f5b298b5d8a9147376f2d61ec9f9c519bd0a4a9b214",
+    "policy_agent": "562a85d81510fdcae80131d5f950e89797d334bdfa03f91f33576b4c09ff1395",
+    "policy_retrieval_plan": "3cfc03866b35e98dbc5412ddee595b83667290e5fb8bb7c3e24157bdec5fe41e",
+    "synthesis": "53f2e868fa9bbb629dbc5296e3ec7e8720adf778aa59d348a8c28e0172b5e649"
+  }
+}

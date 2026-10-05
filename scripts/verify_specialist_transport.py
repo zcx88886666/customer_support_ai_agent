@@ -28,7 +28,7 @@ from sqlalchemy.orm import sessionmaker
 from evals.runners.run_business_oidc_postgres import available_port, database_url, process_env, wait_healthy
 from resolveai import models as m
 from resolveai.db import make_engine
-from resolveai.prompts import ROOT
+from resolveai.prompts import ROOT, PromptRegistry
 from resolveai.seed import seed_demo
 from resolveai.policy_retrieval import index_bundle
 from scripts.verify_oidc import login
@@ -87,12 +87,19 @@ class ProviderHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         schema = request["response_format"]["json_schema"]["name"]
-        content = {"route": "knowledge", "intents": ["shipment_tracking"], "uncertainty": None} if schema == "RouteDecision" else {"selected_evidence": [], "unresolved_conditions": []}
+        if schema == "RouteDecision":
+            content = {"route": "knowledge", "intents": ["shipment_tracking"], "uncertainty": None}
+        elif schema == "OrderToolPlan":
+            content = {"tools": ["get_order", "track_shipment"]}
+        elif schema == "PolicyRetrievalPlan":
+            content = {"queries": ["退货条件", "未签收配送异常"]}
+        else:
+            content = {"selected_evidence": [], "unresolved_conditions": []}
         payload = json.dumps({"choices": [{"message": {"content": json.dumps(content)}}],
                               "usage": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.00003}}).encode()
         with self.server.lock:
             trickle = self.server.trickle
-            self.server.events.append({"event": "provider_started", "trickle": trickle})
+            self.server.events.append({"event": "provider_started", "trickle": trickle, "schema": schema})
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -126,12 +133,14 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
     db_url = database_url(admin_url, name, sqlalchemy=True)
     env = process_env(db_url)
     provider = LocalProvider()
+    if scenario != "llm_trickle":
+        provider.trickle = False
     provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
     provider_thread.start()
     env.update({"LONG_TERM_MEMORY_MODE": "off", "TRANSPORT_TEST_PROVIDER_URL": f"http://127.0.0.1:{provider.server_port}/chat",
                 "MCP_RESOURCE_URL": "http://localhost:8001/mcp", "AGENT_REQUEST_TIMEOUT_SECONDS": "0.8" if scenario in {"llm_trickle", "sql_lock"} else "25",
                 "AGENT_MAX_LLM_CALLS": "10", "AGENT_MAX_TOKENS": "16000", "AGENT_MAX_COST_USD": "0.02",
-                "OPENROUTER_API_KEY": "synthetic-local-key" if scenario == "llm_trickle" else ""})
+                "OPENROUTER_API_KEY": "" if scenario == "sql_lock" else "synthetic-local-key"})
     engine = make_engine(db_url)
     factory = sessionmaker(engine, expire_on_commit=False)
     processes = []
@@ -217,6 +226,10 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
                 state = db.get(m.ThreadState, case_id).state
                 checks["late_result_did_not_replace_current_thread"] = state["status"] == recovered["status"] and state["task_id"] and state["plan_revision"] == recovered["plan_revision"]
             mcp_log.flush()
+            if scenario in {"mcp_slow", "mcp_contradiction"} and "order_tool_plan" in PromptRegistry(env.get("PROMPT_RELEASE", "release-v1")).manifest["prompts"]:
+                with provider.lock:
+                    schemas = {event.get("schema") for event in provider.events}
+                checks["both_specialist_planners_executed"] = {"OrderToolPlan", "PolicyRetrievalPlan"}.issubset(schemas)
             checks["mcp_transport_no_internal_errors"] = "ERROR" not in (folder / f"{case_id}.mcp.log").read_text()
             return {"case_id": case_id, "database": name, "status": "pass" if all(checks.values()) else "fail", "checks": checks, **observations}
     except Exception as exc:
@@ -258,6 +271,8 @@ def main() -> int:
                 "model": "local HTTP stub; no provider credit", "authentication": "real Keycloak code+PKCE",
                 "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "verifier_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    release = PromptRegistry(os.getenv("PROMPT_RELEASE", "release-v1"))
+    manifest.update({"prompt_release_id": release.release_id, "prompt_hashes": release.manifest["prompts"]})
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     scenarios = [args.scenario] if args.scenario else ["llm_trickle", "mcp_slow", "mcp_contradiction", "sql_lock"]
     rows = []

@@ -101,13 +101,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scope", choices=("composite", "development"), default="composite")
     parser.add_argument("--seed", type=int, default=20261003)
+    parser.add_argument("--case-id", action="append", help="Replay only selected cases from the chosen scope")
     args = parser.parse_args()
     load_local_key()
-    registry = PromptRegistry("release-v1")
+    registry = PromptRegistry(os.getenv("PROMPT_RELEASE", "release-v1"))
     model_id = ModelRegistry().get("intent").model
     seed_clock = datetime.now(timezone.utc)
     cases = [case for case in load_cases() if "collaboration" in case.get("tags", []) or (args.scope == "development" and case["case_id"] in {"smoke-01", "smoke-02", "smoke-10", "smoke-11", "smoke-16", "smoke-17", "smoke-20", "smoke-24"})]
     assert len(cases) == (3 if args.scope == "composite" else 11)
+    if args.case_id:
+        unknown = set(args.case_id) - {case["case_id"] for case in cases}
+        if unknown:
+            parser.error("Unknown case IDs for this scope: " + ", ".join(sorted(unknown)))
+        cases = [case for case in cases if case["case_id"] in set(args.case_id)]
     rng = random.Random(args.seed)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-paired-model-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
@@ -141,7 +147,7 @@ def main() -> None:
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "pairs.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in pairs), encoding="utf-8")
     (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "scope": args.scope, "execution_order_seed": args.seed, "execution_order": execution_order, "seed_clock": seed_clock.isoformat(), "prompt_release_id": "release-v1", "prompt_hashes": registry.manifest["prompts"], "model": model_id, "scorer_version": "smoke-v2", "auth_mode": "mock", "database": "isolated-sqlite-per-execution"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "selected_case_ids": [case["case_id"] for case in cases], "scope": args.scope, "execution_order_seed": args.seed, "execution_order": execution_order, "seed_clock": seed_clock.isoformat(), "prompt_release_id": os.getenv("PROMPT_RELEASE", "release-v1"), "prompt_hashes": registry.manifest["prompts"], "model": model_id, "scorer_version": "smoke-v2", "auth_mode": "mock", "database": "isolated-sqlite-per-execution"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     rows = ["<html><meta charset='utf-8'><title>ResolveAI paired model report</title><body>", f"<h1>Run {html.escape(run_id)}</h1>", f"<p>{len(cases)} paired synthetic cases on {html.escape(model_id)}.</p>", "<table border='1'><tr><th>Case</th><th>Single</th><th>Collab</th><th>Outcome</th></tr>"]
     for pair in pairs:

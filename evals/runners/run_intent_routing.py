@@ -43,7 +43,7 @@ def main() -> None:
     else:
         os.environ["OPENROUTER_API_KEY"] = ""
     cases = load_cases()
-    registry = PromptRegistry("release-v1")
+    registry = PromptRegistry(os.getenv("PROMPT_RELEASE", "release-v1"))
     model = ModelRegistry().get("intent").model if args.mode == "live" else "deterministic-mock"
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-intent-" + args.mode + "-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
@@ -66,7 +66,7 @@ def main() -> None:
     confusion = Counter(f"{row['expected_route']} -> {row['actual_route']}" for row in results)
     latencies = [row["latency_ms"] for row in results]
     summary = {"run_id": run_id, "suite": "intent_routing_dev_v1", "mode": args.mode, "model": model, "cases": len(results), "counts": dict(counts), "critical_failures": [row["case_id"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"], "route_confusion": dict(sorted(confusion.items())), "median_latency_ms": round(statistics.median(latencies), 2), "provider_calls": sum(row["provider_usage"]["calls"] for row in results), "provider_reported_cost_usd": round(sum(row["provider_usage"]["reported_cost_usd"] for row in results), 8), "gate_pass": counts.get("pass", 0) == len(results)}
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "source": "author-written synthetic development labels", "prompt_release_id": "release-v1", "prompt_hashes": registry.manifest["prompts"], "model": model, "scorer_version": "intent-route-v1"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "source": "author-written synthetic development labels", "prompt_release_id": os.getenv("PROMPT_RELEASE", "release-v1"), "prompt_hashes": registry.manifest["prompts"], "model": model, "scorer_version": "intent-route-v1"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

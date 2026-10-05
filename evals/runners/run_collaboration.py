@@ -66,7 +66,7 @@ def main() -> None:
     cases = load_cases(dataset, args.suite)
     rng = random.Random(args.seed)
     model = ModelRegistry().get("intent").model if args.mode == "live" else "deterministic-mock"
-    release = PromptRegistry("release-v1")
+    release = PromptRegistry(os.getenv("PROMPT_RELEASE", "release-v1"))
     seed_clock = datetime.now(timezone.utc)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-collab-" + args.suite.replace("_", "-") + "-" + args.mode + "-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
@@ -112,7 +112,7 @@ def main() -> None:
             selected = [row for row in results if row["agent_mode"] == mode and family_by_case[row["case_id"]] == family]
             by_family[family][mode] = {"pass": sum(row["status"] == "pass" for row in selected), "total": len(selected)}
     summary = {"run_id": run_id, "suite": cases[0]["suite"], "mode": args.mode, "model": model, "unique_cases": len(cases), "executions": len(results), "by_mode": by_mode, "by_family": by_family, "paired_outcomes": dict(outcomes), "critical_failures": [row["case_id"] + ":" + row["agent_mode"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"], "gate_pass": all(row["status"] == "pass" for row in results)}
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(), "source": "author-written synthetic development cases", "execution_order_seed": args.seed, "execution_order": execution_order, "seed_clock": seed_clock.isoformat(), "prompt_release_id": "release-v1", "prompt_hashes": release.manifest["prompts"], "model": model, "scorer_version": "smoke-v2", "database": "fresh-SQLite-per-execution"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(), "source": "author-written synthetic development cases", "execution_order_seed": args.seed, "execution_order": execution_order, "seed_clock": seed_clock.isoformat(), "prompt_release_id": os.getenv("PROMPT_RELEASE", "release-v1"), "prompt_hashes": release.manifest["prompts"], "model": model, "scorer_version": "smoke-v2", "database": "fresh-SQLite-per-execution"}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "pairs.jsonl").write_text("".join(json.dumps(pair, ensure_ascii=False) + "\n" for pair in pairs), encoding="utf-8")

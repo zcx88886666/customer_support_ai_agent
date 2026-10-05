@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import tempfile
 import time
 from collections import Counter
@@ -219,8 +220,8 @@ def main() -> None:
     manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(),
                 "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "seed_clock": seed_clock.isoformat(),
                 "scorer_version": "core-business-dev-v1", "auth_mode": "mock", "database": "isolated-sqlite-per-case",
-                "model": "deterministic-mock", "prompt_release_id": "release-v1",
-                "prompt_hashes": PromptRegistry("release-v1").manifest["prompts"]}
+                "model": "deterministic-mock", "prompt_release_id": os.getenv("PROMPT_RELEASE", "release-v1"),
+                "prompt_hashes": PromptRegistry(os.getenv("PROMPT_RELEASE", "release-v1")).manifest["prompts"]}
     (folder / "case_results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
     (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

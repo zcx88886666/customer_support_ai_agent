@@ -12,13 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import DBAPIError
 
-from . import domain as d, models as m
-from .schemas import ChatInput, DelegationTask, RouteDecision, SpecialistFinding, SpecialistReview
+from . import domain as d, models as m, specialist_planning as planning
+from .schemas import ChatInput, DelegationTask, RouteDecision, SpecialistFinding, SpecialistReview, OrderToolPlan, PolicyRetrievalPlan
 from .telemetry import tracer, current_trace_id
 from .openrouter import configured as model_configured, call_structured, ModelUnavailable
 from .config import settings
 from .policy_retrieval import retrieve
-from .commerce_client import read_order, CommerceUnavailable
+from .commerce_client import read_order, read_selected_order_tools, CommerceUnavailable
 from .memory import list_preferences
 from .db import session_read_lock
 from .request_budget import BudgetExceeded, BudgetLimits, RequestBudget, budget_scope, current_budget
@@ -50,6 +50,7 @@ class AgentState(TypedDict, total=False):
 class SpecialistState(TypedDict, total=False):
     task: dict
     finding: dict
+    read_plan: dict
 
 
 def classify(text: str) -> RouteDecision:
@@ -198,6 +199,9 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
             order = d.owned_order(db, customer_id, task.verified_order_ref)
         except d.DomainError:
             return False
+        if task.order_read_scope == "status" and finding.source_ids == [order.id]:
+            return finding.source_version == str(order.version) and finding.facts == {
+                "order_status": order.status, "shipment_status": None, "delivered_at": None}
         shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
         shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
         if shipment is None or finding.source_version != str(order.version) or finding.source_ids != [order.id, shipment.id]:
@@ -219,27 +223,40 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
 def build_policy_graph(db: Session):
     read_lock = session_read_lock(db)
 
+    def plan(state: SpecialistState):
+        task = DelegationTask.model_validate(state["task"])
+        return {"read_plan": planning.plan_policy(task, settings.prompt_release).model_dump()}
+
     def inspect(state: SpecialistState):
         task = DelegationTask.model_validate(state["task"])
+        queries = PolicyRetrievalPlan.model_validate(state["read_plan"]).queries
+        calls = 0
         with read_lock:
             bundle = db.get(m.PolicyBundle, task.policy_bundle_id)
             if not bundle:
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["policy_bundle_missing"])
                 return {"finding": finding.model_dump(mode="json")}
             bundle_id, window_days = bundle.id, bundle.window_days
-            clauses = [{"id": c.id, "title": c.title, "body": c.body}
-                       for c in retrieve(db, bundle_id, task.question_scope, limit=5)]
+            by_id = {}
+            for query in queries:
+                calls += 1
+                # Anchor every rewrite to the original, server-filtered scope.
+                for clause in retrieve(db, bundle_id, task.question_scope + " " + query, limit=5):
+                    by_id.setdefault(clause.id, {"id": clause.id, "title": clause.title, "body": clause.body})
+            clauses = list(by_id.values())[:5]
         if not clauses:
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["policy_evidence_missing"])
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["policy_evidence_missing"], tool_calls=calls)
         else:
             ranked = review_evidence("policy_agent", task.question_scope, [(c["id"], {"title": c["title"][:120], "body": c["body"][:350]}) for c in clauses])
             order = {source_id: index for index, source_id in enumerate(ranked)}
             clauses.sort(key=lambda clause: order.get(clause["id"], len(ranked)))
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"window_days": window_days, "clauses": clauses}, source_ids=[c["id"] for c in clauses], source_version=bundle_id, queried_at=datetime.now(timezone.utc), tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"window_days": window_days, "clauses": clauses}, source_ids=[c["id"] for c in clauses], source_version=bundle_id, queried_at=datetime.now(timezone.utc), tool_calls=calls, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
         return {"finding": finding.model_dump(mode="json")}
     graph = StateGraph(SpecialistState)
+    graph.add_node("plan_policy_reads", plan)
     graph.add_node("inspect_policy", inspect)
-    graph.add_edge(START, "inspect_policy")
+    graph.add_edge(START, "plan_policy_reads")
+    graph.add_edge("plan_policy_reads", "inspect_policy")
     graph.add_edge("inspect_policy", END)
     return graph.compile()
 
@@ -247,35 +264,55 @@ def build_policy_graph(db: Session):
 def build_order_graph(db: Session, customer_id: str, access_token: str | None = None):
     read_lock = session_read_lock(db)
 
+    def plan(state: SpecialistState):
+        task = DelegationTask.model_validate(state["task"])
+        return {"read_plan": planning.plan_order(task, settings.prompt_release).model_dump()}
+
     def inspect(state: SpecialistState):
         task = DelegationTask.model_validate(state["task"])
+        tools = OrderToolPlan.model_validate(state["read_plan"]).tools
+        if not tools:
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["order_evidence_missing"])
+            return {"finding": finding.model_dump(mode="json")}
         if settings.auth_mode == "oidc":
             try:
-                order, shipments = read_order(access_token, task.verified_order_ref)
-                shipment = next((row for row in shipments if row.get("id") == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
-                ranked = review_evidence("order_agent", task.question_scope, [(order["id"], {"order_status": order["status"]})] + ([(shipment["id"], {"shipment_status": shipment["status"], "delivered_at": shipment.get("delivered_at")})] if shipment else [])) if shipment else []
-                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order["status"], "shipment_status": shipment["status"] if shipment else None, "delivered_at": shipment.get("delivered_at") if shipment else None}, source_ids=[order["id"]] + ([shipment["id"]] if shipment else []), source_version=str(order["version"]), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["package_ambiguous_or_missing"], tool_calls=2, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
-            except (CommerceUnavailable, KeyError, TypeError):
-                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["commerce_unavailable"], tool_calls=2)
-            return {"finding": finding.model_dump(mode="json")}
-        with read_lock:
-            order = d.owned_order(db, customer_id, task.verified_order_ref)
-            shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
-            shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
-            order_id, version = order.id, str(order.version)
-            shipment_id = shipment.id if shipment else None
-            ambiguous = len(shipments) > 1 and shipment is None
-            facts = {"order_status": order.status, "shipment_status": shipment.status if shipment else None,
-                     "delivered_at": shipment.delivered_at.isoformat() if shipment and shipment.delivered_at else None}
-        if ambiguous:
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["package_ambiguous"], source_version=version, tool_calls=1)
+                if tools == ["get_order", "track_shipment"]:
+                    order, shipments = read_order(access_token, task.verified_order_ref)
+                else:
+                    selected = read_selected_order_tools(access_token, task.verified_order_ref, tools)
+                    order, shipments = selected.get("get_order"), selected.get("track_shipment", [])
+            except (CommerceUnavailable, KeyError, TypeError) as error:
+                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["commerce_unavailable"], tool_calls=getattr(error, "tool_calls", len(tools)))
+                return {"finding": finding.model_dump(mode="json")}
         else:
-            ranked = review_evidence("order_agent", task.question_scope, [(order_id, {"order_status": facts["order_status"]})] + ([(shipment_id, {"shipment_status": facts["shipment_status"], "delivered_at": facts["delivered_at"]})] if shipment_id else [])) if shipment_id else []
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment_id else "incomplete", facts=facts, source_ids=[order_id] + ([shipment_id] if shipment_id else []), source_version=version, queried_at=datetime.now(timezone.utc), unresolved=[] if shipment_id else ["shipment_missing"], tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
+            with read_lock:
+                owned = d.owned_order(db, customer_id, task.verified_order_ref)
+                order = {"id": owned.id, "status": owned.status, "version": owned.version} if "get_order" in tools else None
+                shipments = [{"id": row.id, "status": row.status, "delivered_at": row.delivered_at.isoformat() if row.delivered_at else None}
+                             for row in db.scalars(select(m.Shipment).where(m.Shipment.order_id == owned.id)).all()] if "track_shipment" in tools else []
+        shipment = next((row for row in shipments if row.get("id") == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
+        complete = order is not None and (shipment is not None or task.order_read_scope == "status")
+        if not complete:
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["order_evidence_missing"], tool_calls=len(tools))
+        else:
+            try:
+                facts = {"order_status": order["status"], "shipment_status": shipment["status"] if shipment else None,
+                         "delivered_at": shipment.get("delivered_at") if shipment else None}
+                evidence = [(order["id"], {"order_status": facts["order_status"]})]
+                if shipment:
+                    evidence.append((shipment["id"], {"shipment_status": facts["shipment_status"], "delivered_at": facts["delivered_at"]}))
+                ranked = review_evidence("order_agent", task.question_scope, evidence)
+                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts=facts,
+                    source_ids=[ref for ref, _ in evidence], source_version=str(order["version"]), queried_at=datetime.now(timezone.utc),
+                    tool_calls=len(tools), model_reviewed=bool(ranked), reviewed_source_ids=ranked)
+            except (KeyError, TypeError):
+                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["commerce_unavailable"], tool_calls=len(tools))
         return {"finding": finding.model_dump(mode="json")}
     graph = StateGraph(SpecialistState)
+    graph.add_node("plan_order_reads", plan)
     graph.add_node("inspect_order", inspect)
-    graph.add_edge(START, "inspect_order")
+    graph.add_edge(START, "plan_order_reads")
+    graph.add_edge("plan_order_reads", "inspect_order")
     graph.add_edge("inspect_order", END)
     return graph.compile()
 
@@ -308,7 +345,9 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
 
     def dispatch(state: AgentState):
         try:
-            timeout = min(10, request_budget.remaining_seconds())
+            # Sequential mode must allow the second task to wait for the first;
+            # each invocation still gets at most ten seconds within this limit.
+            timeout = min(20 if mode == "single" else 10, request_budget.remaining_seconds())
         except BudgetExceeded:
             return {"status": "handoff", "answer": say("自动处理资源上限已达到，请联系人工客服。", "The automatic processing limit has been reached. Please contact a human support agent.")}
         intents = state["intents"]
@@ -324,7 +363,8 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         reused = []
         for specialist, needed in (("order", needs_order), ("policy", needs_policy)):
             if needed:
-                task = DelegationTask(task_id=uuid4().hex, thread_id=state["thread_id"], plan_revision=state["plan_revision"], specialist=specialist, question_scope=state["text"][:160], verified_order_ref=state.get("order_id") if specialist == "order" else None, verified_shipment_ref=state.get("shipment_id") if specialist == "order" else None, policy_bundle_id=state["bundle_id"] if specialist == "policy" else None, evidence_version_hint=state.get("order_version"), deadline=datetime.now(timezone.utc) + timedelta(seconds=timeout))
+                read_scope = "shipment" if any(intent in intents for intent in ("shipment_tracking", "return_request", "refund_request", "cancel_request")) else "status"
+                task = DelegationTask(task_id=uuid4().hex, thread_id=state["thread_id"], plan_revision=state["plan_revision"], specialist=specialist, question_scope=state["text"][:160], verified_order_ref=state.get("order_id") if specialist == "order" else None, verified_shipment_ref=state.get("shipment_id") if specialist == "order" else None, policy_bundle_id=state["bundle_id"] if specialist == "policy" else None, evidence_version_hint=state.get("order_version"), deadline=datetime.now(timezone.utc) + timedelta(seconds=timeout), order_read_scope=read_scope)
                 tasks.append(task.model_dump(mode="json"))
                 prior = state.get("reuse_findings", {}).get(specialist)
                 if prior:
@@ -355,9 +395,10 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["deadline_expired"])
             else:
                 graph = policy_graph if task.specialist == "policy" else order_graph
-                with budget_scope(request_budget, timeout_seconds=(task.deadline - datetime.now(timezone.utc)).total_seconds()):
+                effective_deadline = min(task.deadline, datetime.now(timezone.utc) + timedelta(seconds=10))
+                with budget_scope(request_budget, timeout_seconds=(effective_deadline - datetime.now(timezone.utc)).total_seconds()):
                     finding = SpecialistFinding.model_validate(graph.invoke({"task": task.model_dump(mode="json")})["finding"])
-                if datetime.now(timezone.utc) > task.deadline:
+                if datetime.now(timezone.utc) > effective_deadline:
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["deadline_expired"])
         return {"findings": [finding.model_dump(mode="json")]}
 
@@ -403,8 +444,11 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
         for role, finding in validated:
             if role == "order":
                 status = finding.facts.get("shipment_status")
-                pieces.append(say(f"查到的订单事实：包裹 {finding.source_ids[1]} 状态为 {status or '未知'}。", f"Verified order fact: package {finding.source_ids[1]} has status {status or 'unknown'}."))
-                if status != "delivered" and ("policy_qa" in state["intents"] or "return_request" in state["intents"]):
+                if tasks[finding.task_id].order_read_scope == "status":
+                    pieces.append(say(f"查到的订单事实：订单状态为 {finding.facts['order_status']}。", f"Verified order fact: the order status is {finding.facts['order_status']}."))
+                else:
+                    pieces.append(say(f"查到的订单事实：包裹 {finding.source_ids[1]} 状态为 {status or '未知'}。", f"Verified order fact: package {finding.source_ids[1]} has status {status or 'unknown'}."))
+                if len(finding.source_ids) > 1 and status != "delivered" and ("policy_qa" in state["intents"] or "return_request" in state["intents"]):
                     pieces.append(say("包裹尚未确认签收，不能按签收次日起算的七日无理由退货流程直接提交；请联系人工核查配送异常。", "Delivery has not been confirmed. The return window measured from the day after delivery cannot be applied yet; please contact support to check the delivery issue."))
             if role == "policy":
                 refs = "、".join(finding.source_ids)
@@ -519,7 +563,7 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
         result = {"status": "handoff", "answer": say("已转人工处理。", "I have referred this to a human support agent."), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif decision.intents == ["unknown"]:
         result = {"status": "clarify", "answer": say("请说明要查询的订单、物流或退货问题。", "Please describe your order, delivery, or return question."), "route": decision.model_dump(), "plan_revision": revision, "findings": []}
-    elif order_id and any(intent in decision.intents for intent in ("shipment_tracking", "order_status", "refund_request", "cancel_request")) and not shipment_id and len(ships := db.scalars(select(m.Shipment).where(m.Shipment.order_id == order_id)).all()) > 1:
+    elif order_id and any(intent in decision.intents for intent in ("shipment_tracking", "refund_request", "cancel_request")) and not shipment_id and len(ships := db.scalars(select(m.Shipment).where(m.Shipment.order_id == order_id)).all()) > 1:
         result = {"status": "clarify", "answer": say("此订单有多个包裹，请选择要查询的包裹编号。", "This order has multiple packages. Please select the package number you want to check."), "shipment_options": [ship.id for ship in ships], "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     elif "return_request" in decision.intents:
         missing = next((pair for pair in ((not order_id, "请提供订单编号。"), (not item_id, "请提供要退的商品项编号。"), (not quantity, "请提供退货数量。"), (not reason, "请提供退货原因。"), (not body.confirmed, "请明确确认订单、商品、数量、原因并提交退货申请。"), (not body.idempotency_key, "请使用提交按钮生成幂等请求编号。")) if pair[0]), (False, ""))

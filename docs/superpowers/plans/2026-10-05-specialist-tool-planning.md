@@ -36,7 +36,7 @@
 - [x] Add schema/authorization tests, verify missing contracts fail.
 - [x] Implement strict schemas, local prompts, and economical task configuration. Technical model unavailability uses deterministic read plans; valid empty plans expose missing evidence.
 - [x] Verify schema rejection, duplicate limits, no-key defaults, technical fallback, exact release propagation, and original policy-scope abstention.
-- [ ] Commit catalog and contracts, then generate a new manifest with explicit development verification scope after committed content exists.
+- [x] Commit catalog and contracts, then generate a new manifest with explicit development verification scope after committed content exists.
 
 ## Task 2: Execute bounded choices in both specialist graphs
 
@@ -44,19 +44,19 @@
 
 **Interfaces:** `read_selected_order_tools(token, order_id, tools) -> dict[str, object]` binds runtime-only arguments. Findings retain actual tool counts, current versions, and independently validated sources. Status findings may cite only the owned order; shipment findings still require the selected owned package.
 
-- [ ] Add failing tests for one-tool status, selected-tool authenticated calls, invalid/empty/incomplete selection, bundle isolation, bounded second policy query, and concurrent planning with serialized local reads.
-- [ ] Add explicit graph planning nodes and scoped tool dispatch. Snapshot ORM evidence under the shared lock, release before model/MCP calls, and preserve historical-release behavior.
-- [ ] Extend merge validation and status answer assembly without weakening shipment checks.
-- [ ] Run focused tests and no-key minimum, record outcomes, commit.
+- [x] Add failing tests for one-tool status, selected-tool authenticated calls, invalid/empty/incomplete selection, bundle isolation, bounded second policy query, and concurrent planning with serialized local reads.
+- [x] Add explicit graph planning nodes and scoped tool dispatch. Snapshot ORM evidence under the shared lock, release before model/MCP calls, and preserve historical-release behavior.
+- [x] Extend merge validation and status answer assembly without weakening shipment checks.
+- [x] Run focused tests and no-key minimum, record outcomes, commit.
 
 ## Task 3: Development rollout and real-model checks
 
 **Files:** Modify `infra/compose/compose.yaml`, documented runner manifests, `README.md`, `docs/STATUS.md`, `docs/implementation/ISSUES.md`; create a specialist planning evidence report.
 
-- [ ] Let Docker select the explicit development artifact; run a bounded GPT-4o-mini paired sample with accurate actual release hashes and provider usage.
-- [ ] Run real-OIDC/PostgreSQL MCP and fault checks, rebuild the API, and verify all seven authorization checks.
-- [ ] Obtain focused independent review through the requesting-code-review skill and address substantiated findings.
-- [ ] Commit verified implementation and report remaining synthesis/semantic/human-review work honestly.
+- [x] Let Docker select the explicit development artifact; run a bounded GPT-4o-mini paired sample with accurate actual release hashes and provider usage.
+- [x] Run real-OIDC/PostgreSQL MCP and fault checks, rebuild the API, and verify all seven authorization checks.
+- [x] Obtain focused independent review through the requesting-code-review skill and address substantiated findings.
+- [x] Commit verified implementation and report remaining synthesis/semantic/human-review work honestly.
 
 ## Execution ledger
 
@@ -67,3 +67,15 @@ Ruling: continue in the shared checkout on master, following the user's explicit
 Ruling: a development Prompt artifact records `verification_scope=development` and `locked_release_pass=false`; its `verified` flag means startup hash validation, not completion of independent locked evaluation. This preserves runtime compatibility while making the verification scope explicit. Cost if wrong: a consumer that ignores the scope could misread the existing flag as a release gate.
 
 Task 1: missing-module test failed before implementation; strict schema/planner tests are implemented, together with two economical task entries and new catalog prompts. Existing immutable release-v1 hashes are unchanged.
+
+Task 1 complete at `c526de6`: 20/20 planner/prompt/provider tests. Development manifest generated from that committed catalog.
+
+Task 2: six integration tests went red→green. Initial no-key status-scorer failures and live queued-task timeout are retained in the [evidence report](../../implementation/specialist-tool-planning-2026-10-05.md). The scorer's status-source regression and serial scheduling regression went red→green; final no-key 7/7 passed.
+
+Ruling: sequential dispatch deadline covers both queued tasks (at most twenty seconds), each invocation still gets ten seconds, and total request admission stays at twenty-five seconds by default. Parallel deadlines remain ten seconds. This reflects actual serial scheduling. Cost if wrong: a slow serial answer can take longer before reporting partial evidence, within the configured request account.
+
+Task 3: real transport matrix 8/8 with 84 checks; targeted paid replay 6/6 at $0.000819; independent focused review 63 tests and one Important finding. Final fix: two-tool status display regression failed in both modes, then passed after using requested scope; no-key suite green with 175 tests.
+
+External block: automatic approval review rejected the new Langfuse mirror upload twice, including after a clean generic-payload audit. Explicit user approval of this specific development artifact is required; no workaround attempted. This does not block local prompt inference.
+
+Task 2–3 complete: the final no-key minimum `20261005T003122Z-minimum-37202e` passed 7/7 with 175 Python tests, and the final rebuilt Docker API passed all seven real authorization checks. Earlier failed runs are retained locally. A new 162-case human-review packet preserves changed metadata without copying previous model decisions. No deferred minor findings were reported. Broader v6 work and the rejected Cloud upload remain separately open.

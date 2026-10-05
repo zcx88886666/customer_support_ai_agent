@@ -23,6 +23,22 @@ def test_scorer_rejects_false_return_submission(db):
     assert all(checks.values())
 
 
+def test_scorer_accepts_status_only_gold_but_rejects_foreign_stale_or_shipping_claims(db):
+    valid = {"status": "ok", "source_version": "1", "source_ids": ["demo-order-01"],
+             "facts": {"order_status": "paid", "shipment_status": None, "delivered_at": None}}
+
+    def accepted(finding, gold=None):
+        checks, _ = score_case(case(gold or {"order_read_scope": "status"}),
+                               {"status": "answered", "answer": "", "findings": [finding]}, 200, db)
+        return checks["evidence_owned_and_current"]
+
+    assert accepted(valid)
+    assert not accepted(valid, {"order_read_scope": "shipment"})
+    assert not accepted({**valid, "source_ids": ["demo-order-05"]})
+    assert not accepted({**valid, "source_version": "0"})
+    assert not accepted({**valid, "facts": {**valid["facts"], "shipment_status": "delivered"}})
+
+
 def test_scorer_rejects_unissued_claim_and_foreign_or_forged_sources(db):
     base = {"status": "answered", "answer": "模拟退款已执行", "findings": []}
     checks, _ = score_case(case({"ledger_count": 0}), base, 200, db)

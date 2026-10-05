@@ -16,7 +16,9 @@ from .request_budget import remaining_io_seconds
 
 
 class CommerceUnavailable(RuntimeError):
-    pass
+    def __init__(self, message: str, *, tool_calls: int = 0):
+        super().__init__(message)
+        self.tool_calls = tool_calls
 
 
 async def call_read_tools(token: str, calls: list[tuple[str, dict]], url: str | None = None) -> list:
@@ -25,6 +27,7 @@ async def call_read_tools(token: str, calls: list[tuple[str, dict]], url: str | 
     if any(name not in {"get_order", "track_shipment", "check_return_eligibility"} for name, _ in calls):
         raise CommerceUnavailable("Tool not allowed")
     results = []
+    attempts = 0
     with tracer().start_as_current_span("commerce.mcp", record_exception=False, set_status_on_exception=False) as span:
         span.set_attribute("tool_calls", len(calls))
         headers = {"Authorization": "Bearer " + token}
@@ -36,6 +39,7 @@ async def call_read_tools(token: str, calls: list[tuple[str, dict]], url: str | 
                         async with ClientSession(*streams) as session:
                             await session.initialize()
                             for name, arguments in calls:
+                                attempts += 1
                                 result = await session.call_tool(name, arguments, read_timeout_seconds=8)
                                 if result.is_error:
                                     raise CommerceUnavailable("Commerce tool refused request")
@@ -47,12 +51,26 @@ async def call_read_tools(token: str, calls: list[tuple[str, dict]], url: str | 
                                 results.append(value)
         except Exception:
             span.set_attribute("error.type", "commerce_unavailable")
-            raise CommerceUnavailable("Commerce query unavailable") from None
+            raise CommerceUnavailable("Commerce query unavailable", tool_calls=attempts) from None
     return results
 
 
 def read_order(token: str, order_id: str) -> tuple[dict, list[dict]]:
-    order, shipments = anyio.run(call_read_tools, token, [("get_order", {"order_id": order_id}), ("track_shipment", {"order_id": order_id})])
-    if not isinstance(order, dict) or order.get("id") != order_id or not isinstance(shipments, list):
-        raise CommerceUnavailable("Invalid commerce evidence")
-    return order, shipments
+    selected = read_selected_order_tools(token, order_id, ["get_order", "track_shipment"])
+    return selected["get_order"], selected["track_shipment"]
+
+
+def read_selected_order_tools(token: str, order_id: str, tools: list[str]) -> dict:
+    if not 1 <= len(tools) <= 2 or len(tools) != len(set(tools)) or any(name not in {"get_order", "track_shipment"} for name in tools):
+        raise CommerceUnavailable("Invalid order read plan")
+    values = anyio.run(call_read_tools, token, [(name, {"order_id": order_id}) for name in tools])
+    if len(values) != len(tools):
+        raise CommerceUnavailable("Invalid commerce evidence", tool_calls=len(tools))
+    selected = dict(zip(tools, values))
+    order = selected.get("get_order")
+    if "get_order" in selected and (not isinstance(order, dict) or order.get("id") != order_id):
+        raise CommerceUnavailable("Invalid commerce evidence", tool_calls=len(tools))
+    shipments = selected.get("track_shipment")
+    if "track_shipment" in selected and (not isinstance(shipments, list) or any(not isinstance(row, dict) for row in shipments)):
+        raise CommerceUnavailable("Invalid commerce evidence", tool_calls=len(tools))
+    return selected

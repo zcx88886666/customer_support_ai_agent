@@ -192,7 +192,7 @@ PROMPT_RELEASE=specialists-dev-v1 .venv/bin/python scripts/verify_minimum.py
 PROMPT_RELEASE=specialists-dev-v1 .venv/bin/python evals/runners/run_paired_model.py --scope development --case-id smoke-11 --case-id smoke-20 --case-id smoke-22
 ```
 
-The second command uses the ignored OpenRouter key and paid GPT-4o-mini calls; the recorded six-case replay cost $0.000819. The new Langfuse prompt mirror is pending explicit approval after automatic approval review rejected its upload. Local inference and existing tracing continue without the new mirror; generations cannot link to its new Cloud prompt versions yet.
+The second command uses the ignored OpenRouter key and paid GPT-4o-mini calls; the recorded six-case replay cost $0.000819. The user approved the [specialist Langfuse mirror](docs/implementation/specialist-prompt-mirror-2026-10-05.md): all nine templates synchronized and read back with zero drift. Matching new generations can now attach Cloud prompt versions through the ignored mirror map. Local committed prompt text remains authoritative.
 
 The parent graph [merges duplicate findings by task/revision](docs/implementation/duplicate-dispatch-2026-10-05.md) and shares one read execution for repeated dispatches. `.venv/bin/python scripts/verify_specialist_transport.py --scenario duplicate_dispatch` uses the same real-Keycloak/PostgreSQL setup as the other transport probes and a free local model stub; omitting `--scenario` now runs ten cases.
 

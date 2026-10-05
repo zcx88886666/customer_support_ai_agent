@@ -30,6 +30,8 @@ An isolated [worker container restart drill](docs/implementation/worker-containe
 
 An isolated million-order PostgreSQL import and 20/50/100-user no-key k6 read/chat load were measured without changing the live demo database. The [scale report](docs/implementation/million-order-load-2026-10-02.md) has the commands, actual P95s, error rates, resource snapshots, and limits; the load script is [million_orders.js](evals/load/million_orders.js).
 
+For sustained HTTP write traffic, run `.venv/bin/python evals/runners/run_mixed_write_load.py` with Docker and cached PostgreSQL/k6 images. It creates its own synthetic database, API and worker, then measures ten concurrent users for 60 seconds through return, warehouse, approval and simulated refund. The [write-load report](docs/implementation/mixed-write-load-2026-10-05.md) records 697 completed workflows, zero HTTP errors, terminal safety checks and the approval/worker race it exposed and fixed.
+
 PostgreSQL startup also builds the active policy's version-scoped full-text and pgvector search rows. Verify the index, bundle isolation, and stale-index rejection with `docker compose --env-file .env -f infra/compose/compose.yaml exec -T api python scripts/verify_policy_search.py`. This is a local character-gram vector baseline; the [verification report](docs/implementation/policy-search-2026-10-02.md) records its limits.
 
 A supervisor can restore a superseded policy through `POST /policies/{bundle_id}/rollback`. The service checks its content hash and search index before switching the active bundle and records an audit event. The [rollback report](docs/implementation/policy-rollback-2026-10-02.md) covers the migrated demo bundle and measured checks.

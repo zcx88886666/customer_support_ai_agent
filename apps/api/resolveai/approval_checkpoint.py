@@ -23,6 +23,17 @@ class ApprovalState(TypedDict, total=False):
 
 def _status(db: Session, proposal_id: str) -> tuple[str, str | None]:
     db.expire_all()
+    # The worker locks this same order before issuing. Acquire it before
+    # reading proposal/approval/version facts, so READ COMMITTED cannot mix an
+    # approved proposal from before issuance with an order version afterward.
+    order = db.scalar(select(m.Order)
+                      .join(m.ReturnRequest, m.ReturnRequest.order_id == m.Order.id)
+                      .join(m.RefundProposal, m.RefundProposal.return_id == m.ReturnRequest.id)
+                      .where(m.RefundProposal.id == proposal_id)
+                      .with_for_update(of=m.Order)
+                      .execution_options(populate_existing=True))
+    if order is None:
+        raise DomainError("proposal_not_found", "Proposal unavailable", 404)
     proposal = db.get(m.RefundProposal, proposal_id)
     if proposal is None:
         raise DomainError("proposal_not_found", "Proposal unavailable", 404)
@@ -36,8 +47,7 @@ def _status(db: Session, proposal_id: str) -> tuple[str, str | None]:
     if approval.decision != "approved" or proposal.status not in {"approved", "issued"}:
         return "inconsistent", approval.id
     request = db.get(m.ReturnRequest, proposal.return_id)
-    order = db.get(m.Order, request.order_id) if request else None
-    if not order or request.plan_revision != proposal.plan_revision or request.policy_bundle_id != proposal.policy_bundle_id:
+    if not request or request.plan_revision != proposal.plan_revision or request.policy_bundle_id != proposal.policy_bundle_id:
         return "stale", approval.id
     if proposal.status == "issued":
         ledger = db.scalar(select(m.RefundLedger).where(m.RefundLedger.proposal_id == proposal_id))

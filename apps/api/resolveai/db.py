@@ -18,15 +18,31 @@ def session_read_lock(session):
     return session.info.setdefault("resolveai_read_lock", threading.RLock())
 
 
+def discard_expired_transaction(session):
+    """End expired network work locally; preserve SQLite in-memory fixtures."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.invalidate()
+    else:
+        session.rollback()
+
+
 def make_engine(url: str | None = None):
     database_url = url or settings.database_url
     kwargs = {"connect_args": {"check_same_thread": False}} if database_url.startswith("sqlite") else {}
+    if database_url.startswith("postgresql"):
+        from .database_io import BudgetQueuePool
+        kwargs["poolclass"] = BudgetQueuePool
     engine = create_engine(database_url, pool_pre_ping=True, **kwargs)
     if database_url.startswith("sqlite"):
         @event.listens_for(engine, "connect")
         def enable_foreign_keys(connection, _record):
             connection.execute("PRAGMA foreign_keys=ON")
     elif database_url.startswith("postgresql"):
+        @event.listens_for(engine, "do_connect")
+        def bound_request_connection(_dialect, _record, args, parameters):
+            from .database_io import connect_with_deadline
+            return connect_with_deadline(*args, **parameters)
+
         @event.listens_for(engine, "before_cursor_execute")
         def bound_request_statement(_connection, cursor, _statement, _parameters, _context, _executemany):
             from .request_budget import current_budget, remaining_io_seconds

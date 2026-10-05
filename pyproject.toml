@@ -17,7 +17,7 @@ dependencies = [
   "pyyaml>=6,<7",
   "langgraph>=0.6,<2",
   "langgraph-checkpoint-postgres>=3,<4",
-  "psycopg[binary]>=3.2,<4",
+  "psycopg[binary]>=3.3.6,<4",
   "mcp>=1.20,<3",
   "celery[redis]>=5.6,<6",
 ]

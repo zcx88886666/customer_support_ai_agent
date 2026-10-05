@@ -493,7 +493,11 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
             except (BudgetExceeded, DBAPIError) as exc:
                 if isinstance(exc, DBAPIError) and getattr(exc.orig, "sqlstate", None) != "57014":
                     raise
-                db.rollback()
+                # The caller's I/O allowance is exhausted. Invalidate closes
+                # locally, discards pending SQL and clears ORM state without
+                # attempting another network rollback under that deadline.
+                from .db import discard_expired_transaction
+                discard_expired_transaction(db)
                 budget.stop("database_deadline_expired" if isinstance(exc, DBAPIError) else "deadline_expired")
                 span.set_attribute("langfuse.observation.level", "WARNING")
                 # Only the handoff transaction gets a short separate deadline.
@@ -507,7 +511,7 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
                             route="human_handoff", intents=["unknown"], uncertainty="resource_limit"))
                         db.flush()
                 except (BudgetExceeded, DBAPIError):
-                    db.rollback()
+                    discard_expired_transaction(db)
                     raise d.DomainError("request_deadline_expired", "Please retry or contact human support", 503) from None
             summary = budget.snapshot()
             result["resource_usage"] = summary

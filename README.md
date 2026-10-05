@@ -4,7 +4,7 @@ ResolveAI is a synthetic, single-company e-commerce after-sales demonstration. I
 
 ## Docker Compose run (recommended)
 
-From the repository root, start the local mock stack with PostgreSQL 17, pgvector, API, web UI, refund worker, Commerce MCP, OTel Collector, and Jaeger. No API keys are needed:
+From the repository root, start the local mock stack with PostgreSQL 17, pgvector, API, web UI, Redis/Celery worker and scheduler, Commerce MCP, OTel Collector, and Jaeger. No API keys are needed:
 
 ```bash
 docker compose -f infra/compose/compose.yaml up --build -d
@@ -18,7 +18,7 @@ To replay the synthetic approval-to-refund workflow, inspect logs, or stop the s
 
 ```bash
 docker compose -f infra/compose/compose.yaml exec -T api python scripts/demo_workflow.py
-docker compose -f infra/compose/compose.yaml logs --tail=100 api worker
+docker compose -f infra/compose/compose.yaml logs --tail=100 api worker beat
 docker compose -f infra/compose/compose.yaml down
 ```
 
@@ -73,7 +73,7 @@ Open `http://localhost:3000`. The page exposes the customer, warehouse, and supe
 2. Customer: `POST /returns` with an owned order/item, positive quantity, reason, `confirmed=true`, and an idempotency key. The service recalculates eligibility using the Shanghai business calendar.
 3. Warehouse: `POST /warehouse/returns/{id}/receipt`, then `/inspection`, then `POST /returns/{id}/proposal`.
 4. Supervisor: `GET /supervisor/proposals`, then `POST /supervisor/proposals/{id}/decision`.
-5. Controlled worker: run `.venv/bin/python -m resolveai.worker` for the direct local setup. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose calls the worker every 30 seconds; the worker ran in the verified Docker stack. The customer and Agent APIs have no refund issuance endpoint.
+5. Controlled worker: run `.venv/bin/python -m resolveai.worker` for the direct local setup. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose runs private Redis/Celery refund and deadline jobs every 30 seconds through one Beat scheduler and a two-child worker. [Queue/recovery verification](docs/implementation/celery-jobs-2026-10-05.md) checked duplicates, isolation, worker restart and broker outage; SQL approval remains independent of Redis. The customer and Agent APIs have no refund issuance endpoint.
 
 An isolated [live worker deadline check](docs/implementation/deadline-delivery-2026-10-03.md) verified that the 30-second loop created one due-soon and one overdue alert with audit events and no refund; a later loop did not duplicate them.
 
@@ -203,7 +203,7 @@ Set `OPENROUTER_API_KEY` to enable structured intent extraction and bounded spec
 Add `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL=https://us.cloud.langfuse.com` to the same local `.env` for the configured US project. The project keys identify the project; no project name is needed in the application. Keep the existing OpenRouter key. Then run:
 
 ```bash
-docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api worker
+docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api worker beat
 docker compose --env-file .env -f infra/compose/compose.yaml exec -T api python scripts/sync_prompts_to_langfuse.py release-v1
 docker compose --env-file .env -f infra/compose/compose.yaml exec -T api python scripts/sync_prompts_to_langfuse.py release-v1 --check
 ```
@@ -228,3 +228,9 @@ sha256sum /tmp/resolveai-backup.bundle
 In the restored checkout, compare `git rev-parse HEAD` with the source and load `release-v1` through `PromptRegistry` to verify catalog hashes. A local bundle alone is not an offline backup; copy it to storage outside this machine.
 
 The remaining v6 gates, failed commands, and external prerequisites are tracked in [implementation issues](docs/implementation/ISSUES.md) and [status](docs/STATUS.md). The project should not be described as production deployed or fully validated while those gates remain open.
+
+## Controlled asynchronous jobs
+
+Compose starts Redis, `worker` and one `beat` scheduler by default. `JOB_NAMESPACE=dev` selects the job namespace; database identity also isolates queues and Redis keys. The direct local one-shot worker needs no broker. For local Celery processes, configure `CELERY_BROKER_URL` and run `.venv/bin/celery -A resolveai.jobs:app worker --concurrency=2` and one `.venv/bin/celery -A resolveai.jobs:app beat --schedule=.local/celery-beat`. Keep worker and scheduler on the same database/namespace.
+
+Run `.venv/bin/python scripts/verify_celery_jobs.py` with Docker and cached Redis/PostgreSQL images for the isolated synthetic queued-job, restart and outage probe. The [job report](docs/implementation/celery-jobs-2026-10-05.md) records task limits, terminal SQL checks and remaining bulk-job work. There is no public refund issuance or arbitrary job-dispatch endpoint.

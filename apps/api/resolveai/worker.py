@@ -16,15 +16,16 @@ from .db import SessionLocal
 from .telemetry import configure_telemetry, tracer
 
 
-def issue_approved_once() -> list[str]:
+def issue_approved_once(*, session_factory=None) -> list[str]:
     configure_telemetry()
+    factory = session_factory or SessionLocal
     issued = []
-    with SessionLocal() as db:
+    with factory() as db:
         ids = db.scalars(select(m.RefundProposal.id).where(m.RefundProposal.status == "approved")).all()
     for proposal_id in ids:
         try:
             with tracer().start_as_current_span("refund.worker"):
-                with SessionLocal.begin() as db:
+                with factory.begin() as db:
                     ledger = d.issue_refund(db, proposal_id, f"refund:{proposal_id}", datetime.now(timezone.utc))
                     issued.append(ledger.id)
         except d.DomainError:
@@ -33,17 +34,18 @@ def issue_approved_once() -> list[str]:
     return issued
 
 
-def alert_refund_deadlines_once(at: datetime | None = None) -> list[tuple[str, str]]:
+def alert_refund_deadlines_once(at: datetime | None = None, *, session_factory=None) -> list[tuple[str, str]]:
     """Record one 24-hour warning and one overdue alert per received return."""
     configure_telemetry()
+    factory = session_factory or SessionLocal
     at = d.aware(at or datetime.now(timezone.utc))
     alerted = []
-    with SessionLocal() as db:
+    with factory() as db:
         return_ids = db.scalars(select(m.WarehouseReceipt.return_id)).all()
     for return_id in return_ids:
         try:
             with tracer().start_as_current_span("refund.deadline_alert"):
-                with SessionLocal.begin() as db:
+                with factory.begin() as db:
                     request = db.scalar(select(m.ReturnRequest).where(m.ReturnRequest.id == return_id).with_for_update())
                     if request is None or request.status == "refund_issued":
                         continue

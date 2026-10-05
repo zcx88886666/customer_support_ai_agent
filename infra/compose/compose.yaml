@@ -16,6 +16,10 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
   api:
     build:
       context: ../..
@@ -72,12 +76,15 @@ services:
       api:
         condition: service_healthy
   worker:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: infra/compose/Dockerfile
-    command: ["sh", "-c", "while true; do python -m resolveai.worker; sleep 30; done"]
+    command: ["celery", "-A", "resolveai.jobs:app", "worker", "--loglevel=INFO", "--concurrency=2"]
     environment:
       DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
+      CELERY_BROKER_URL: redis://redis:6379/0
+      JOB_NAMESPACE: ${JOB_NAMESPACE:-dev}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: resolveai-worker
@@ -86,6 +93,25 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     depends_on:
       api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  beat:
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+    command: ["celery", "-A", "resolveai.jobs:app", "beat", "--loglevel=INFO", "--schedule=/var/lib/resolveai-beat/schedule"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
+      CELERY_BROKER_URL: redis://redis:6379/0
+      JOB_NAMESPACE: ${JOB_NAMESPACE:-dev}
+    volumes:
+      - beatdata:/var/lib/resolveai-beat
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
         condition: service_healthy
   mcp:
     build:
@@ -137,3 +163,4 @@ volumes:
   redisdata:
   observability:
   keycloakdata:
+  beatdata:

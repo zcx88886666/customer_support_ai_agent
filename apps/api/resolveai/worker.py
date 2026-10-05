@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from . import domain as d, models as m
@@ -34,14 +34,29 @@ def issue_approved_once(*, session_factory=None) -> list[str]:
     return issued
 
 
-def alert_refund_deadlines_once(at: datetime | None = None, *, session_factory=None) -> list[tuple[str, str]]:
+def alert_refund_deadlines_once(at: datetime | None = None, *, session_factory=None,
+                               batch_size: int | None = None) -> list[tuple[str, str]]:
     """Record one 24-hour warning and one overdue alert per received return."""
+    if batch_size is not None and (type(batch_size) is not int or not 1 <= batch_size <= 1000):
+        raise ValueError("Deadline batch size must be an integer from 1 to 1000")
     configure_telemetry()
     factory = session_factory or SessionLocal
     at = d.aware(at or datetime.now(timezone.utc))
     alerted = []
     with factory() as db:
-        return_ids = db.scalars(select(m.WarehouseReceipt.return_id)).all()
+        def missing_alert(kind):
+            return ~exists().where(m.RefundDeadlineAlert.return_id == m.ReturnRequest.id,
+                                   m.RefundDeadlineAlert.kind == kind)
+        candidates = (select(m.ReturnRequest.id)
+                      .join(m.WarehouseReceipt, m.WarehouseReceipt.return_id == m.ReturnRequest.id)
+                      .where(m.ReturnRequest.status != "refund_issued", or_(
+                          and_(m.WarehouseReceipt.received_at <= at - timedelta(days=7), missing_alert("overdue")),
+                          and_(m.WarehouseReceipt.received_at <= at - timedelta(days=6),
+                               m.WarehouseReceipt.received_at > at - timedelta(days=7), missing_alert("due_soon"))))
+                      .order_by(m.WarehouseReceipt.received_at, m.ReturnRequest.id))
+        if batch_size is not None:
+            candidates = candidates.limit(batch_size)
+        return_ids = db.scalars(candidates).all()
     for return_id in return_ids:
         try:
             with tracer().start_as_current_span("refund.deadline_alert"):

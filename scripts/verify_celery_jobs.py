@@ -33,6 +33,7 @@ from resolveai.db import make_engine
 from resolveai.jobs import make_app
 from resolveai.policy_retrieval import index_current
 from resolveai.seed import seed_demo
+from evals.runners.run_mixed_write_load import seed_load_orders
 from scripts.verify_postgres_server_crash import DisposablePostgres, docker, save_failure
 
 
@@ -74,6 +75,29 @@ def stop_owned_process(process):
             process.wait(timeout=5)
 
 
+def seed_probe_state(factory, now):
+    with factory.begin() as db:
+        seed_demo(db, now)
+        proposals = []
+        for number in (1, 6):
+            key = str(number).zfill(2)
+            request = d.create_return(db, 'cust-01', 'demo-order-' + key, 'demo-item-' + key, 1,
+                                      'synthetic job', True, 'jobs-return-' + key, now)
+            d.record_receipt(db, 'warehouse-job', request.id, 1, now)
+            d.record_inspection(db, 'warehouse-job', request.id, True, 'intact', now)
+            proposals.append(d.create_proposal(db, request.id, now).id)
+        for number, age in ((3, 6.5), (4, 8)):
+            key = str(number).zfill(2)
+            shipment = db.get(m.Shipment, 'demo-shipment-' + key)
+            shipment.delivered_at = now - timedelta(days=10)
+            for event in db.scalars(select(m.ShipmentEvent).where(m.ShipmentEvent.shipment_id == shipment.id)).all():
+                event.occurred_at = now - timedelta(days=10 if event.status == 'delivered' else 11)
+            request = d.create_return(db, 'cust-01', 'demo-order-' + key, 'demo-item-' + key, 1,
+                                      'synthetic alert', True, 'jobs-return-' + key, now - timedelta(days=9))
+            d.record_receipt(db, 'warehouse-job', request.id, 1, now - timedelta(days=age))
+    return proposals
+
+
 def main():
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-celery-' + uuid4().hex[:6]
     report = REPORT_ROOT / run_id
@@ -91,6 +115,7 @@ def main():
     completed = False
     cleanup = {}
     task_ids = []
+    batch_progress = []
     try:
         pg.create()
         redis_image = docker('image', 'inspect', 'redis:7-alpine', '--format', '{{.Id}}')
@@ -128,22 +153,7 @@ def main():
         engine = make_engine(url)
         factory = sessionmaker(engine, expire_on_commit=False)
         now = datetime.now(timezone.utc)
-        with factory.begin() as db:
-            seed_demo(db, now)
-            proposals = []
-            for number in (1, 6):
-                key = str(number).zfill(2)
-                request = d.create_return(db, 'cust-01', 'demo-order-' + key, 'demo-item-' + key, 1,
-                                          'synthetic job', True, 'jobs-return-' + key, now)
-                d.record_receipt(db, 'warehouse-job', request.id, 1, now)
-                d.record_inspection(db, 'warehouse-job', request.id, True, 'intact', now)
-                proposals.append(d.create_proposal(db, request.id, now).id)
-            for number, age in ((3, 6.5), (4, 8)):
-                key = str(number).zfill(2)
-                request = d.create_return(db, 'cust-01', 'demo-order-' + key, 'demo-item-' + key, 1,
-                                          'synthetic alert', True, 'jobs-return-' + key, now)
-                receipt = d.record_receipt(db, 'warehouse-job', request.id, 1, now)
-                receipt.received_at = now - timedelta(days=age)
+        proposals = seed_probe_state(factory, now)
         port = free_port()
         api_url = f'http://127.0.0.1:{port}'
         def start_process(args, log_name):
@@ -242,6 +252,24 @@ def main():
         stop_owned_process(beat)
         beat = None
         wait_task(send('refunds'))
+        # More than one queued allowance proves that already-alerted rows do
+        # not consume the next batch. Historical timestamps remain causal.
+        seed_load_orders(factory, 205, now - timedelta(days=10))
+        with factory.begin() as db:
+            for index in range(205):
+                key = str(index).zfill(5)
+                request = d.create_return(db, 'load-customer', 'load-order-' + key, 'load-item-' + key,
+                                          1, 'synthetic bounded alert', True, 'jobs-batch-' + key,
+                                          now - timedelta(days=10))
+                d.record_receipt(db, 'warehouse-job', request.id, 1, now - timedelta(days=8))
+        for _ in range(4):
+            with factory() as db:
+                before = db.scalar(select(func.count()).select_from(m.RefundDeadlineAlert))
+            wait_task(send('deadlines'))
+            with factory() as db:
+                after = db.scalar(select(func.count()).select_from(m.RefundDeadlineAlert))
+            batch_progress.append(after - before)
+        checks['bounded_deadline_batches_progress'] = batch_progress == [100, 100, 5, 0]
         with factory() as db:
             ledgers = db.scalars(select(m.RefundLedger)).all()
             audits = db.scalars(select(m.AuditEvent).where(m.AuditEvent.action == 'issue_refund')).all()
@@ -252,8 +280,12 @@ def main():
                 and db.scalar(select(m.Approval).where(m.Approval.proposal_id == entry.proposal_id)).decision == 'approved'
                 for entry in ledgers)
             checks['final_alerts_and_audits_deduplicate'] = (
-                db.scalar(select(func.count()).select_from(m.RefundDeadlineAlert)) == 2
-                and db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action.like('refund_deadline_%'))) == 2)
+                db.scalar(select(func.count()).select_from(m.RefundDeadlineAlert)) == 207
+                and db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action.like('refund_deadline_%'))) == 207)
+            checks['fixture_receipts_follow_return_creation'] = db.scalar(
+                select(func.count()).select_from(m.ReturnRequest)
+                .join(m.WarehouseReceipt, m.WarehouseReceipt.return_id == m.ReturnRequest.id)
+                .where(m.ReturnRequest.created_at > m.WarehouseReceipt.received_at)) == 0
         completed = True
     except (Exception, KeyboardInterrupt) as exc:
         error_type = type(exc).__name__
@@ -298,6 +330,7 @@ def main():
                 'task_ids': task_ids, 'cleanup': cleanup, 'locked_release_ready': False}
     summary = {'run_id': run_id, 'cases': 1, 'passed': int(passed), 'incomplete': int(not passed),
                'failed_checks': sum(not value for value in checks.values()), 'checks': checks, 'error_type': error_type,
+               'deadline_batch_progress': batch_progress,
                'cleanup': cleanup, 'locked_release_ready': False}
     (report / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (report / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')

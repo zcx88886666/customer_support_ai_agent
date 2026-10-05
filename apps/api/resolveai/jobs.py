@@ -81,7 +81,7 @@ def make_app(namespace: str, database_url: str, broker_url: str) -> Celery:
     @celery_app.task(name="resolveai.jobs.deadlines", **task_options)
     def deadlines(namespace: str) -> dict[str, int]:
         with database_factory(namespace) as factory:
-            return {"alert_count": len(worker.alert_refund_deadlines_once(session_factory=factory))}
+            return {"alert_count": len(worker.alert_refund_deadlines_once(session_factory=factory, batch_size=100))}
 
     @celery_app.task(name="resolveai.jobs.policy_index", **task_options)
     def policy_index(namespace: str) -> dict[str, int]:

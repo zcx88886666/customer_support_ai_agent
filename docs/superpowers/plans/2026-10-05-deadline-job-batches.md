@@ -27,8 +27,8 @@
 - [x] Write failing real-domain regression: two-row batches progress through seven overdue receipts and then cause no per-return SQL reads; due-soon alert does not suppress later overdue alert.
 - [x] Implement correlated SQL candidate selection, deterministic ordering and optional limit; run focused tests green.
 - [x] Run full Python suite and real isolated Redis/PostgreSQL queued-job probe; rebuild Docker worker/API/Beat and verify readiness/OIDC.
-- [ ] Obtain one fresh read-only review; fix Critical/Important findings in one red→green pass.
-- [ ] Record measured evidence, diff check and explicit local commit.
+- [x] Obtain one fresh read-only review; fix Critical/Important findings in one red→green pass.
+- [x] Record measured evidence, diff check and explicit local commit.
 
 ## Rulings
 
@@ -37,3 +37,5 @@
 - Ruling: Refund scanning is unchanged because naive batching would starve valid proposals behind unresolved invalid ones. Broader fair refund scheduling needs a separate contract.
 
 - Ruling: Extend the real broker probe with205 historical overdue receipts to verify100/100/5/0 progress; its prior retroactive receipt fixture violated chronology, so an independently failing fixture test now pins correct delivery→return→receipt dates.
+
+- Ruling: Normalize direct caller instants to UTC before SQL filtering and elapsed-day arithmetic — SQLite drops datetime parameter offsets and DST arithmetic changes elapsed durations; six equivalent-instant cases establish the contract. Fresh review found one Important issue, fixed in one pass; no Critical/Minor issue. Wider delivery SLA and large-history performance remain separate gates.

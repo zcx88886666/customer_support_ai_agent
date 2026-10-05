@@ -4,7 +4,7 @@
 
 ## Current snapshot
 
-- [Pending deadline batches](implementation/deadline-job-batches-2026-10-05.md) now exclude already alerted/issued receipts in SQL and bound queued processing to100 candidates. Real isolated Redis/PostgreSQL verification passed **18/18 checks**, advancing205 overdue receipts as **100,100,5,0**, with207 unique alerts/audits and two correct ledgers. A fixture chronology defect went red→green; successful resources were removed. Full suite passed **238 tests with four opt-in Docker/PostgreSQL skips**; the deployed worker pong and seven OIDC/API/MCP checks passed.
+- [Pending deadline batches](implementation/deadline-job-batches-2026-10-05.md) now exclude already alerted/issued receipts in SQL and bound queued processing to100 candidates. Real isolated Redis/PostgreSQL verification passed **18/18 checks**, advancing205 overdue receipts as **100,100,5,0**, with207 unique alerts/audits and two correct ledgers. A fixture chronology defect went red→green; successful resources were removed. A fresh reviewer timezone finding went red→green across equivalent instants and DST; thresholds now normalize to UTC. Final full suite passed **244 tests with four opt-in Docker/PostgreSQL skips**; the deployed worker pong and seven OIDC/API/MCP checks passed.
 
 - The user explicitly approved the previously blocked `specialists-dev-v1` Langfuse US upload. [Synchronization and readback](implementation/specialist-prompt-mirror-2026-10-05.md) passed **9/9 templates, zero drift**, and the ignored runtime mirror map is available in Docker and on the host. Prompt text still comes only from the local verified release; broader locked-run Cloud reconciliation and billing confirmation remain open.
 

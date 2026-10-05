@@ -41,7 +41,9 @@ def alert_refund_deadlines_once(at: datetime | None = None, *, session_factory=N
         raise ValueError("Deadline batch size must be an integer from 1 to 1000")
     configure_telemetry()
     factory = session_factory or SessionLocal
-    at = d.aware(at or datetime.now(timezone.utc))
+    # SQLite drops bound datetime offsets; calculate all thresholds in UTC.
+    # This also keeps elapsed-day arithmetic independent of DST transitions.
+    at = d.aware(at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     alerted = []
     with factory() as db:
         def missing_alert(kind):

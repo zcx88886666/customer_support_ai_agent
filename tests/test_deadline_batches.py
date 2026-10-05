@@ -1,6 +1,7 @@
 """Queued deadline batches advance past existing alerts instead of rescanning."""
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import event, func, select
@@ -57,6 +58,33 @@ def test_prior_due_soon_alert_does_not_suppress_overdue_batch(session_factory):
         alerts = db.scalars(select(m.RefundDeadlineAlert)).all()
         assert len(alerts) == 14
         assert {(a.return_id, a.kind) for a in alerts} == {(rid, kind) for rid in ids for kind in ('due_soon', 'overdue')}
+
+
+@pytest.mark.parametrize('received_at,zone', [
+    (AT, timezone(timedelta(hours=-7))),
+    (AT, timezone(timedelta(hours=8))),
+    # The six-day interval crosses the November 1 DST fallback.
+    (datetime(2026, 10, 27, 12, tzinfo=timezone.utc), ZoneInfo('America/Los_Angeles')),
+])
+@pytest.mark.parametrize('batch_size', [None, 100])
+def test_equivalent_instants_preserve_deadline_boundaries(session_factory, received_at, zone, batch_size):
+    with session_factory.begin() as db:
+        request = d.create_return(db, 'cust-01', 'demo-order-01', 'demo-item-01',
+                                  1, 'timezone boundary', True, 'timezone-return', AT)
+        d.record_receipt(db, 'warehouse-timezone', request.id, 1, received_at)
+        return_id = request.id
+    for age, kind in ((6, 'due_soon'), (7, 'overdue')):
+        boundary = received_at + timedelta(days=age)
+        before = (boundary - timedelta(microseconds=1)).astimezone(zone)
+        assert worker.alert_refund_deadlines_once(before, session_factory=session_factory, batch_size=batch_size) == []
+        assert worker.alert_refund_deadlines_once(boundary.astimezone(zone), session_factory=session_factory,
+                                                 batch_size=batch_size) == [(return_id, kind)]
+        assert worker.alert_refund_deadlines_once(boundary, session_factory=session_factory, batch_size=batch_size) == []
+    with session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(m.RefundDeadlineAlert)) == 2
+        assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+            m.AuditEvent.action.in_(['refund_deadline_due_soon', 'refund_deadline_overdue']))) == 2
+        assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
 
 
 @pytest.mark.parametrize('limit', [0, -1, 1001, True, 1.5])

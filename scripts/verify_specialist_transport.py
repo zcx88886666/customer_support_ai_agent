@@ -129,12 +129,13 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
     provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
     provider_thread.start()
     env.update({"LONG_TERM_MEMORY_MODE": "off", "TRANSPORT_TEST_PROVIDER_URL": f"http://127.0.0.1:{provider.server_port}/chat",
-                "MCP_RESOURCE_URL": "http://localhost:8001/mcp", "AGENT_REQUEST_TIMEOUT_SECONDS": "0.8" if scenario == "llm_trickle" else "25",
+                "MCP_RESOURCE_URL": "http://localhost:8001/mcp", "AGENT_REQUEST_TIMEOUT_SECONDS": "0.8" if scenario in {"llm_trickle", "sql_lock"} else "25",
                 "AGENT_MAX_LLM_CALLS": "10", "AGENT_MAX_TOKENS": "16000", "AGENT_MAX_COST_USD": "0.02",
                 "OPENROUTER_API_KEY": "synthetic-local-key" if scenario == "llm_trickle" else ""})
     engine = make_engine(db_url)
     factory = sessionmaker(engine, expire_on_commit=False)
     processes = []
+    lock_connection = None
     checks = {}
     observations = {}
     try:
@@ -156,6 +157,12 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
             headers = {"Authorization": "Bearer " + token}
             body = {"thread_id": case_id, "message": "查包裹物流" if scenario == "llm_trickle" else "包裹没到能退吗",
                     "order_id": "demo-order-02", "agent_mode": mode}
+            if scenario == "sql_lock":
+                body.update({"message": "我要退货", "order_id": "demo-order-01", "item_id": "demo-item-01",
+                             "quantity": 1, "reason": "synthetic lock recovery", "confirmed": True,
+                             "idempotency_key": case_id + "-return"})
+                lock_connection = psycopg.connect(database_url(admin_url, name))
+                lock_connection.execute("SELECT id FROM orders WHERE id = 'demo-order-01' FOR UPDATE")
             with httpx.Client(base_url=f"http://127.0.0.1:{api_port}", timeout=30, trust_env=False) as client:
                 started = time.monotonic()
                 response = client.post("/chat", json=body, headers=headers)
@@ -165,8 +172,15 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
                 observations["first_response"] = first
                 observations["first_elapsed_seconds"] = round(elapsed, 4)
                 checks["fault_http_200"] = response.status_code == 200
-                checks["fault_response_bounded"] = elapsed < (3 if scenario == "llm_trickle" else 11)
-                if scenario == "llm_trickle":
+                checks["fault_response_bounded"] = elapsed < (5 if scenario == "sql_lock" else 3 if scenario == "llm_trickle" else 11)
+                if scenario == "sql_lock":
+                    checks["sql_timeout_handoff"] = first["status"] == "handoff" and first["resource_usage"]["exhausted_reason"] == "database_deadline_expired" and bool(first.get("ticket_id"))
+                    with factory() as db:
+                        checks["locked_request_rolled_back"] = db.scalar(select(func.count()).select_from(m.ReturnRequest)) == 0 and db.get(m.Order, "demo-order-01").version == 1
+                    lock_connection.rollback()
+                    lock_connection.close()
+                    lock_connection = None
+                elif scenario == "llm_trickle":
                     checks["model_timeout_handoff"] = first["status"] == "handoff" and first["findings"] == [] and bool(first.get("ticket_id"))
                     checks["attempt_accounted_with_unknown_usage"] = first["resource_usage"]["llm_attempts"] == 1 and first["resource_usage"]["unknown_usage_calls"] == 1 and first["resource_usage"]["pending_calls"] == 0
                     with provider.lock:
@@ -179,9 +193,14 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
                 recovered_response.raise_for_status()
                 recovered = recovered_response.json()
                 observations["recovery_response"] = recovered
-                checks["fresh_turn_recovered_owned_shipment"] = recovered["status"] == "answered" and any(
-                    finding["source_ids"] == ["demo-order-02", "demo-shipment-02"] and finding["facts"]["shipment_status"] == "in_transit"
-                    for finding in recovered["findings"])
+                if scenario == "sql_lock":
+                    replay = client.post("/chat", json=body, headers=headers)
+                    replay.raise_for_status()
+                    checks["fresh_turn_return_retry_idempotent"] = recovered["status"] == replay.json()["status"] == "return_requested" and recovered["return_id"] == replay.json()["return_id"]
+                else:
+                    checks["fresh_turn_recovered_owned_shipment"] = recovered["status"] == "answered" and any(
+                        finding["source_ids"] == ["demo-order-02", "demo-shipment-02"] and finding["facts"]["shipment_status"] == "in_transit"
+                        for finding in recovered["findings"])
                 checks["fresh_turn_budget_reset"] = recovered["resource_usage"]["exhausted_reason"] is None and recovered["resource_usage"]["pending_calls"] == 0
             if scenario == "mcp_slow":
                 deadline = time.monotonic() + 6
@@ -192,7 +211,9 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
                     time.sleep(0.1)
                 checks["late_tool_finished_or_cancelled"] = '"event": "slow_tool_completed"' in contents or '"event": "slow_tool_cancelled"' in contents
             with factory() as db:
-                checks["no_business_writes"] = db.scalar(select(func.count()).select_from(m.ReturnRequest)) == db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+                checks["no_unauthorized_business_writes"] = db.scalar(select(func.count()).select_from(m.ReturnRequest)) == (1 if scenario == "sql_lock" else 0) and db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+                if scenario == "sql_lock":
+                    checks["one_recovered_return_audit_and_version"] = db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == "create_return")) == 1 and db.get(m.Order, "demo-order-01").version == 2
                 state = db.get(m.ThreadState, case_id).state
                 checks["late_result_did_not_replace_current_thread"] = state["status"] == recovered["status"] and state["task_id"] and state["plan_revision"] == recovered["plan_revision"]
             mcp_log.flush()
@@ -201,6 +222,9 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
     except Exception as exc:
         return {"case_id": case_id, "database": name, "status": "incomplete", "error_type": type(exc).__name__, "checks": checks, **observations}
     finally:
+        if lock_connection is not None:
+            lock_connection.rollback()
+            lock_connection.close()
         for process in reversed(processes):
             stop(process)
         provider.shutdown()
@@ -215,7 +239,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--child", choices=("api", "mcp"), help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--scenario", choices=("llm_trickle", "mcp_slow", "mcp_contradiction"))
+    parser.add_argument("--scenario", choices=("llm_trickle", "mcp_slow", "mcp_contradiction", "sql_lock"))
     args = parser.parse_args()
     if args.child:
         child(args.child, args.port, args.scenario)
@@ -230,12 +254,12 @@ def main() -> int:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-transport-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
     folder.mkdir(parents=True)
-    manifest = {"run_id": run_id, "suite": "specialist-transport-v1", "split": "dev", "synthetic": True,
+    manifest = {"run_id": run_id, "suite": "specialist-transport-v2", "split": "dev", "synthetic": True,
                 "model": "local HTTP stub; no provider credit", "authentication": "real Keycloak code+PKCE",
                 "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "verifier_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    scenarios = [args.scenario] if args.scenario else ["llm_trickle", "mcp_slow", "mcp_contradiction"]
+    scenarios = [args.scenario] if args.scenario else ["llm_trickle", "mcp_slow", "mcp_contradiction", "sql_lock"]
     rows = []
     for scenario in scenarios:
         for mode in ("single", "collab"):

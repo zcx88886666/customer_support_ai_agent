@@ -21,6 +21,60 @@ def test_composite_dispatch_and_unreceived_limit(db):
     assert {finding["source_version"] for finding in result["findings"]} == {"1", "policy-demo-v1"}
 
 
+def test_parallel_specialists_serialize_session_reads_but_overlap_model_review(db, monkeypatch):
+    import threading
+    import time
+    from resolveai import agent
+
+    graph_start = threading.Barrier(2)
+    reviews = threading.Barrier(2)
+    guard = threading.Lock()
+    active = maximum = 0
+    reviewed = []
+
+    def measured_read(original):
+        def read(*args, **kwargs):
+            nonlocal active, maximum
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+            try:
+                time.sleep(0.05)
+                return original(*args, **kwargs)
+            finally:
+                with guard:
+                    active -= 1
+        return read
+
+    def simultaneous_graph(original):
+        def build(*args, **kwargs):
+            real = original(*args, **kwargs)
+
+            class Simultaneous:
+                def invoke(self, state):
+                    graph_start.wait(timeout=3)
+                    return real.invoke(state)
+            return Simultaneous()
+        return build
+
+    def review(task_name, _question, _evidence):
+        with guard:
+            reviewed.append(task_name)
+        reviews.wait(timeout=3)
+        return []
+
+    monkeypatch.setattr(agent.d, "owned_order", measured_read(agent.d.owned_order))
+    monkeypatch.setattr(agent, "retrieve", measured_read(agent.retrieve))
+    monkeypatch.setattr(agent, "build_order_graph", simultaneous_graph(agent.build_order_graph))
+    monkeypatch.setattr(agent, "build_policy_graph", simultaneous_graph(agent.build_policy_graph))
+    monkeypatch.setattr(agent, "review_evidence", review)
+    result = run_chat(db, "cust-01", ChatInput(thread_id="parallel-session", message="包裹没到能退吗",
+                      order_id="demo-order-02", agent_mode="collab"))
+    assert result["status"] == "answered" and len(result["findings"]) == 2
+    assert sorted(reviewed) == ["order_agent", "policy_agent"]
+    assert maximum == 1
+
+
 def test_parallel_model_branches_share_request_budget_and_handoff_safely(db, monkeypatch):
     import httpx
 
@@ -49,6 +103,94 @@ def test_parallel_model_branches_share_request_budget_and_handoff_safely(db, mon
     assert next_turn["status"] == "answered"
     assert next_turn["resource_usage"]["llm_attempts"] == 0
     assert next_turn["resource_usage"]["exhausted_reason"] is None
+
+
+def test_sql_timeout_rolls_back_flushed_return_before_safe_handoff(db, monkeypatch):
+    from psycopg.errors import QueryCanceled
+    from sqlalchemy.exc import OperationalError
+    from resolveai import domain
+
+    db.get(m.Shipment, "demo-shipment-01").delivered_at = datetime.now(timezone.utc) - timedelta(days=2)
+    db.commit()
+    original = domain.create_return
+
+    def interrupted(*args, **kwargs):
+        original(*args, **kwargs)
+        raise OperationalError("synthetic statement", None, QueryCanceled("synthetic timeout"))
+
+    monkeypatch.setattr(domain, "create_return", interrupted)
+    body = ChatInput(thread_id="sql-timeout", message="我要退货", order_id="demo-order-01", item_id="demo-item-01",
+                     quantity=1, reason="changed mind", confirmed=True, idempotency_key="sql-timeout-key")
+    result = run_chat(db, "cust-01", body)
+    assert result["status"] == "handoff" and result["findings"] == []
+    assert result["resource_usage"]["exhausted_reason"] == "database_deadline_expired"
+    assert db.query(m.ReturnRequest).count() == db.query(m.RefundLedger).count() == 0
+    assert db.query(m.AuditEvent).filter_by(action="create_return").count() == 0
+    assert db.get(m.Order, "demo-order-01").version == 1
+    assert db.query(m.Ticket).count() == 1
+    assert db.get(m.ThreadState, body.thread_id).state["status"] == "handoff"
+
+    monkeypatch.setattr(domain, "create_return", original)
+    recovered = run_chat(db, "cust-01", body)
+    assert recovered["status"] == "return_requested"
+    assert db.query(m.ReturnRequest).count() == 1
+    assert db.query(m.RefundLedger).count() == 0
+
+
+def test_timeout_handoff_rechecks_thread_ownership_after_rollback(db, monkeypatch):
+    from psycopg.errors import QueryCanceled
+    from sqlalchemy.exc import OperationalError
+
+    db.add(m.ThreadState(id="foreign-timeout", customer_id="cust-02", state={"status": "answered"}))
+    db.commit()
+    original = db.get
+    interrupted = False
+
+    def get(model, key, *args, **kwargs):
+        nonlocal interrupted
+        if model is m.ThreadState and not interrupted:
+            interrupted = True
+            raise OperationalError("synthetic statement", None, QueryCanceled("synthetic timeout"))
+        return original(model, key, *args, **kwargs)
+
+    monkeypatch.setattr(db, "get", get)
+    with pytest.raises(DomainError) as error:
+        run_chat(db, "cust-01", ChatInput(thread_id="foreign-timeout", message="我要退货"))
+    assert error.value.status == 404
+    assert db.query(m.Ticket).count() == db.query(m.ReturnRequest).count() == 0
+    assert db.get(m.ThreadState, "foreign-timeout").customer_id == "cust-02"
+
+
+def test_single_mode_preserves_policy_when_order_completion_passes_deadline(db, monkeypatch):
+    from resolveai import agent
+
+    original = agent.build_order_graph
+    completed = False
+
+    class ControlledDatetime:
+        @staticmethod
+        def now(tz=None):
+            return datetime.now(tz) + (timedelta(seconds=11) if completed else timedelta())
+
+    def delayed_graph(*args, **kwargs):
+        real = original(*args, **kwargs)
+
+        class Delayed:
+            def invoke(self, state):
+                nonlocal completed
+                result = real.invoke(state)
+                completed = True
+                return result
+
+        return Delayed()
+
+    monkeypatch.setattr(agent, "datetime", ControlledDatetime)
+    monkeypatch.setattr(agent, "build_order_graph", delayed_graph)
+    result = run_chat(db, "cust-01", ChatInput(thread_id="single-late-composite", message="包裹没到能退吗", order_id="demo-order-02", agent_mode="single"))
+    assert result["status"] == "answered"
+    assert any(finding["source_version"] == "policy-demo-v1" for finding in result["findings"])
+    assert all("shipment_status" not in finding["facts"] for finding in result["findings"])
+    assert "部分证据未核实" in result["answer"]
 
 
 def test_parent_uses_confirmed_language_without_changing_business_facts(db):

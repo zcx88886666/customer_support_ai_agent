@@ -47,3 +47,7 @@ The transport verifier requires the local Keycloak demo accounts prepared by the
 ## Local Docker deployment
 
 `docker compose --env-file .env -f infra/compose/compose.yaml up -d --build api mcp` rebuilt and started the local API and MCP services. The API health check passed. `.venv/bin/python scripts/verify_oidc.py` then passed all seven named real-Keycloak/API/MCP authorization checks, including authenticated agent reads and cross-customer/role denials. Existing credentials remain in ignored local configuration.
+
+## Later SQL deadline coverage
+
+The [statement-deadline follow-up](sql-request-deadline-2026-10-04.md) now bounds SQLAlchemy chat statements, rolls back before a separately bounded handoff, and fixes single-mode policy scheduling. The extended transport verifier defaults to eight cases under `specialist-transport-v2`; `--scenario sql_lock` runs the two actual row-lock/retry cases. Earlier measurements and limitations above describe the first resource slice. Connection and separate direct-driver checkpoint operations still need broader deadline coverage.

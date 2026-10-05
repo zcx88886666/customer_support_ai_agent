@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import DBAPIError
 
 from . import domain as d, models as m
 from .schemas import ChatInput, DelegationTask, RouteDecision, SpecialistFinding, SpecialistReview
@@ -19,7 +20,8 @@ from .config import settings
 from .policy_retrieval import retrieve
 from .commerce_client import read_order, CommerceUnavailable
 from .memory import list_preferences
-from .request_budget import BudgetExceeded, RequestBudget, budget_scope, current_budget
+from .db import session_read_lock
+from .request_budget import BudgetExceeded, BudgetLimits, RequestBudget, budget_scope, current_budget
 
 
 class AgentState(TypedDict, total=False):
@@ -215,20 +217,25 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
 
 
 def build_policy_graph(db: Session):
+    read_lock = session_read_lock(db)
+
     def inspect(state: SpecialistState):
         task = DelegationTask.model_validate(state["task"])
-        bundle = db.get(m.PolicyBundle, task.policy_bundle_id)
-        if not bundle:
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["policy_bundle_missing"])
-            return {"finding": finding.model_dump(mode="json")}
-        clauses = retrieve(db, bundle.id, task.question_scope, limit=5)
+        with read_lock:
+            bundle = db.get(m.PolicyBundle, task.policy_bundle_id)
+            if not bundle:
+                finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["policy_bundle_missing"])
+                return {"finding": finding.model_dump(mode="json")}
+            bundle_id, window_days = bundle.id, bundle.window_days
+            clauses = [{"id": c.id, "title": c.title, "body": c.body}
+                       for c in retrieve(db, bundle_id, task.question_scope, limit=5)]
         if not clauses:
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["policy_evidence_missing"])
         else:
-            ranked = review_evidence("policy_agent", task.question_scope, [(c.id, {"title": c.title[:120], "body": c.body[:350]}) for c in clauses])
+            ranked = review_evidence("policy_agent", task.question_scope, [(c["id"], {"title": c["title"][:120], "body": c["body"][:350]}) for c in clauses])
             order = {source_id: index for index, source_id in enumerate(ranked)}
-            clauses.sort(key=lambda clause: order.get(clause.id, len(ranked)))
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"window_days": bundle.window_days, "clauses": [{"id": c.id, "title": c.title, "body": c.body} for c in clauses]}, source_ids=[c.id for c in clauses], source_version=bundle.id, queried_at=datetime.now(timezone.utc), tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
+            clauses.sort(key=lambda clause: order.get(clause["id"], len(ranked)))
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts={"window_days": window_days, "clauses": clauses}, source_ids=[c["id"] for c in clauses], source_version=bundle_id, queried_at=datetime.now(timezone.utc), tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
         return {"finding": finding.model_dump(mode="json")}
     graph = StateGraph(SpecialistState)
     graph.add_node("inspect_policy", inspect)
@@ -238,6 +245,8 @@ def build_policy_graph(db: Session):
 
 
 def build_order_graph(db: Session, customer_id: str, access_token: str | None = None):
+    read_lock = session_read_lock(db)
+
     def inspect(state: SpecialistState):
         task = DelegationTask.model_validate(state["task"])
         if settings.auth_mode == "oidc":
@@ -249,14 +258,20 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             except (CommerceUnavailable, KeyError, TypeError):
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["commerce_unavailable"], tool_calls=2)
             return {"finding": finding.model_dump(mode="json")}
-        order = d.owned_order(db, customer_id, task.verified_order_ref)
-        shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
-        shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
-        if len(shipments) > 1 and shipment is None:
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["package_ambiguous"], source_version=str(order.version), tool_calls=1)
+        with read_lock:
+            order = d.owned_order(db, customer_id, task.verified_order_ref)
+            shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
+            shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
+            order_id, version = order.id, str(order.version)
+            shipment_id = shipment.id if shipment else None
+            ambiguous = len(shipments) > 1 and shipment is None
+            facts = {"order_status": order.status, "shipment_status": shipment.status if shipment else None,
+                     "delivered_at": shipment.delivered_at.isoformat() if shipment and shipment.delivered_at else None}
+        if ambiguous:
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["package_ambiguous"], source_version=version, tool_calls=1)
         else:
-            ranked = review_evidence("order_agent", task.question_scope, [(order.id, {"order_status": order.status})] + ([(shipment.id, {"shipment_status": shipment.status, "delivered_at": shipment.delivered_at.isoformat() if shipment.delivered_at else None})] if shipment else [])) if shipment else []
-            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment else "incomplete", facts={"order_status": order.status, "shipment_status": shipment.status if shipment else None, "delivered_at": shipment.delivered_at.isoformat() if shipment and shipment.delivered_at else None}, source_ids=[order.id] + ([shipment.id] if shipment else []), source_version=str(order.version), queried_at=datetime.now(timezone.utc), unresolved=[] if shipment else ["shipment_missing"], tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
+            ranked = review_evidence("order_agent", task.question_scope, [(order_id, {"order_status": facts["order_status"]})] + ([(shipment_id, {"shipment_status": facts["shipment_status"], "delivered_at": facts["delivered_at"]})] if shipment_id else [])) if shipment_id else []
+            finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok" if shipment_id else "incomplete", facts=facts, source_ids=[order_id] + ([shipment_id] if shipment_id else []), source_version=version, queried_at=datetime.now(timezone.utc), unresolved=[] if shipment_id else ["shipment_missing"], tool_calls=1, model_reviewed=bool(ranked), reviewed_source_ids=ranked)
         return {"finding": finding.model_dump(mode="json")}
     graph = StateGraph(SpecialistState)
     graph.add_node("inspect_order", inspect)
@@ -348,7 +363,10 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
 
     def single(state: AgentState):
         findings = []
-        for task in state["dispatch_tasks"]:
+        # The owned order and bundle are already selected by the server. Read
+        # independent local policy before waiting on an external logistics tool
+        # so its timeout cannot consume the queued policy task's deadline.
+        for task in sorted(state["dispatch_tasks"], key=lambda value: value["specialist"] != "policy"):
             findings.extend(specialist({"tasks": [task]})["findings"])
         return {"findings": findings}
 
@@ -421,7 +439,28 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
 def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: str | None = None) -> dict:
     with budget_scope(RequestBudget()) as budget:
         with tracer().start_as_current_span("agent.request_resources") as span:
-            result = _run_chat(db, customer_id, body, access_token=access_token)
+            try:
+                result = _run_chat(db, customer_id, body, access_token=access_token)
+                db.flush()
+            except (BudgetExceeded, DBAPIError) as exc:
+                if isinstance(exc, DBAPIError) and getattr(exc.orig, "sqlstate", None) != "57014":
+                    raise
+                db.rollback()
+                budget.stop("database_deadline_expired" if isinstance(exc, DBAPIError) else "deadline_expired")
+                span.set_attribute("langfuse.observation.level", "WARNING")
+                # Only the handoff transaction gets a short separate deadline.
+                # Re-read thread ownership after rollback, and omit unverified
+                # request order/slot references. No business action is retried.
+                handoff = body.model_copy(update={"order_id": None, "shipment_id": None, "item_id": None,
+                                                  "quantity": None, "reason": None, "confirmed": False})
+                try:
+                    with budget_scope(RequestBudget(BudgetLimits(timeout_seconds=3))):
+                        result = _run_chat(db, customer_id, handoff, forced_decision=RouteDecision(
+                            route="human_handoff", intents=["unknown"], uncertainty="resource_limit"))
+                        db.flush()
+                except (BudgetExceeded, DBAPIError):
+                    db.rollback()
+                    raise d.DomainError("request_deadline_expired", "Please retry or contact human support", 503) from None
             summary = budget.snapshot()
             result["resource_usage"] = summary
             for key in ("llm_attempts", "reported_input_tokens", "reported_output_tokens", "reported_cost_usd", "accounted_tokens", "accounted_cost_usd", "unknown_usage_calls", "elapsed_seconds"):
@@ -431,7 +470,7 @@ def run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: st
             return result
 
 
-def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: str | None = None) -> dict:
+def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: str | None = None, forced_decision: RouteDecision | None = None) -> dict:
     thread = db.get(m.ThreadState, body.thread_id)
     if thread and thread.customer_id != customer_id:
         raise d.DomainError("thread_not_found", "Thread unavailable", 404)
@@ -444,7 +483,7 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
     now = datetime.now(timezone.utc)
     previous = thread.state if thread else {}
     pending_expired = bool(thread and previous.get("status") == "clarify" and thread.updated_at and now - d.aware(thread.updated_at) > timedelta(hours=24))
-    decision = classify(body.message)
+    decision = forced_decision or classify(body.message)
     continuing = previous.get("status") == "clarify" and not pending_expired
     if continuing and decision.route == "clarify":
         if previous.get("pending_route"):
@@ -525,7 +564,7 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
     if result["status"] == "handoff":
         ticket = db.get(m.Ticket, old.get("ticket_id")) if old.get("ticket_id") else None
         if ticket is None:
-            topic = "customer requested support" if decision.route == "human_handoff" else "clarification limit" if "上限" in result["answer"] or "limit has been reached" in result["answer"] else "complaint"
+            topic = "automatic processing limit" if decision.uncertainty == "resource_limit" else "customer requested support" if decision.route == "human_handoff" else "clarification limit" if "上限" in result["answer"] or "limit has been reached" in result["answer"] else "complaint"
             ticket = m.Ticket(customer_id=customer_id, order_id=order_id, topic=topic)
             db.add(ticket)
             db.flush()

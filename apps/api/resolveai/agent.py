@@ -620,6 +620,7 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
             ticket = m.Ticket(customer_id=customer_id, order_id=order_id, topic=topic)
             db.add(ticket)
             db.flush()
+            db.add(m.ConversationMessage(ticket_id=ticket.id, actor_type="customer", body=body.message, created_at=now))
             d.audit(db, customer_id, "create_ticket", "ticket", ticket.id)
         result["ticket_id"] = ticket.id
     safe_state = {"order_id": order_id, "shipment_id": shipment_id, "task_id": task_id, "plan_revision": revision, "status": result["status"], "clarifications": int(old.get("clarifications", 0)) + 1 if result["status"] == "clarify" else 0}

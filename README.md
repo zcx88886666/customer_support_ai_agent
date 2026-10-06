@@ -66,7 +66,7 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. The page exposes the customer, warehouse, and supervisor steps. Support ticket assignment and policy publication are available in the API docs. In mock mode the UI actor and role inputs are development controls, not real authentication.
+Open `http://localhost:3000`. The page exposes customer, support, warehouse, and supervisor workflows. Policy publication is available in the API docs. In mock mode the UI actor and role inputs are development controls, not real authentication.
 
 ## Business workflow
 
@@ -76,6 +76,8 @@ Open `http://localhost:3000`. The page exposes the customer, warehouse, and supe
 3. Warehouse: `POST /warehouse/returns/{id}/receipt`, then `/inspection`, then `POST /returns/{id}/proposal`.
 4. Supervisor: `GET /supervisor/proposals`, then `POST /supervisor/proposals/{id}/decision`.
 5. Controlled worker: run `.venv/bin/python -m resolveai.worker` for the direct local setup. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose runs private Redis/Celery refund and deadline jobs every 30 seconds through one Beat scheduler and a two-child worker. [Queue/recovery verification](docs/implementation/celery-jobs-2026-10-05.md) checked duplicates, isolation, worker restart and broker outage; SQL approval remains independent of Redis. The customer and Agent APIs have no refund issuance endpoint.
+
+A human handoff returns a `ticket_id`. The customer can read and message their own ticket through `GET /tickets`, `GET /tickets/{ticket_id}`, and `POST /tickets/{ticket_id}/messages`. A supervisor assigns an open ticket through `POST /supervisor/tickets/{ticket_id}/assign`; only that support actor can reply or close it with `POST /tickets/{ticket_id}/resolve` and a final message. These actions are also available in the web UI. [Ticket workflow verification](docs/implementation/ticket-handoff-2026-10-06.md) covers ownership and audit. Resolving a ticket has no refund authority or effect on a return decision.
 
 An isolated [live worker deadline check](docs/implementation/deadline-delivery-2026-10-03.md) verified that the 30-second loop created one due-soon and one overdue alert with audit events and no refund; a later loop did not duplicate them.
 

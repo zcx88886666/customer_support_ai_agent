@@ -59,6 +59,26 @@ class PreferenceInput(BaseModel):
 class TicketAssignInput(BaseModel):
     support_actor_id: str = Field(min_length=1, max_length=64)
 
+    @field_validator("support_actor_id")
+    @classmethod
+    def nonblank_actor(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Support actor ID must contain text")
+        return value
+
+
+class TicketMessageInput(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("body")
+    @classmethod
+    def nonblank_body(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Ticket message must contain text")
+        return value
+
 
 class ChatInput(BaseModel):
     thread_id: str = Field(min_length=1, max_length=64)

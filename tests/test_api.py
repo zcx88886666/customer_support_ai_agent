@@ -36,14 +36,20 @@ def test_support_only_sees_assigned_ticket(session_factory):
         with TestClient(app) as client:
             created = client.post("/chat", json={"thread_id": "ticket-thread", "message": "我要人工客服"}, headers={"x-mock-actor": "cust-01", "x-mock-role": "customer"})
             ticket_id = created.json()["ticket_id"]
+            customer_ticket = client.get(f"/tickets/{ticket_id}", headers={"x-mock-actor": "cust-01", "x-mock-role": "customer"})
+            assert [message["body"] for message in customer_ticket.json()["messages"]] == ["我要人工客服"]
             unassigned = client.get("/tickets", headers={"x-mock-actor": "support-a", "x-mock-role": "support"})
             assert unassigned.json() == []
             assigned = client.post(f"/supervisor/tickets/{ticket_id}/assign", json={"support_actor_id": "support-a"}, headers={"x-mock-actor": "supervisor-a", "x-mock-role": "supervisor"})
             visible = client.get("/tickets", headers={"x-mock-actor": "support-a", "x-mock-role": "support"})
             other = client.get("/tickets", headers={"x-mock-actor": "support-b", "x-mock-role": "support"})
+            assert client.post(f"/tickets/{ticket_id}/resolve", json={"body": "Handled by support."}, headers={"x-mock-actor": "support-a", "x-mock-role": "support"}).status_code == 200
+            reopened_request = client.post("/chat", json={"thread_id": "ticket-thread", "message": "我还需要人工客服"}, headers={"x-mock-actor": "cust-01", "x-mock-role": "customer"})
         assert assigned.status_code == 200
         assert visible.json()[0]["id"] == ticket_id
         assert other.json() == []
+        assert reopened_request.status_code == 200
+        assert reopened_request.json()["ticket_id"] != ticket_id
     finally:
         app.dependency_overrides.clear()
 

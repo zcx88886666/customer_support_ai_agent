@@ -7,7 +7,7 @@ import re
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from . import domain as d, models as m
@@ -19,7 +19,7 @@ from .prompts import PromptRegistry
 from .models_config import ModelRegistry
 from .request_budget import BudgetLimits
 from .telemetry import configure_telemetry, tracer, current_trace_id, should_export_request
-from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, PolicyDraftInput, PreferenceInput, ReceiptInput, ReturnInput, TicketAssignInput
+from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, PolicyDraftInput, PreferenceInput, ReceiptInput, ReturnInput, TicketAssignInput, TicketMessageInput
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -247,24 +247,90 @@ def remove_preference(key: str, actor: Principal = Depends(principal), db: Sessi
 
 @app.get("/tickets")
 def tickets(actor: Principal = Depends(principal), db: Session = Depends(get_db)):
-    if "customer" in actor.roles:
-        query = select(m.Ticket).where(m.Ticket.customer_id == actor.customer_id)
-    elif "support" in actor.roles:
-        query = select(m.Ticket).where(m.Ticket.support_actor_id == actor.subject)
-    elif "supervisor" in actor.roles:
+    if "supervisor" in actor.roles:
         query = select(m.Ticket)
     else:
-        raise HTTPException(403, "Role required")
+        conditions = []
+        if "customer" in actor.roles:
+            conditions.append(m.Ticket.customer_id == actor.customer_id)
+        if "support" in actor.roles:
+            conditions.append(m.Ticket.support_actor_id == actor.subject)
+        if not conditions:
+            raise HTTPException(403, "Role required")
+        query = select(m.Ticket).where(or_(*conditions))
     return [{"id": ticket.id, "order_id": ticket.order_id, "status": ticket.status, "topic": ticket.topic} for ticket in db.scalars(query.limit(100)).all()]
+
+
+def _visible_ticket(db: Session, actor: Principal, ticket_id: str, *, lock: bool = False) -> m.Ticket:
+    ticket = db.get(m.Ticket, ticket_id, with_for_update=lock)
+    if not actor.roles.intersection({"customer", "support", "supervisor"}):
+        raise HTTPException(403, "Role required")
+    allowed = ticket is not None and (
+        "supervisor" in actor.roles
+        or "customer" in actor.roles and ticket.customer_id == actor.customer_id
+        or "support" in actor.roles and ticket.support_actor_id == actor.subject
+    )
+    if not allowed:
+        raise HTTPException(404, "Ticket unavailable")
+    return ticket
+
+
+@app.get("/tickets/{ticket_id}")
+def get_ticket(ticket_id: str, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    with db.begin():
+        ticket = _visible_ticket(db, actor, ticket_id, lock=True)
+        messages = db.scalars(select(m.ConversationMessage).where(m.ConversationMessage.ticket_id == ticket.id).order_by(m.ConversationMessage.created_at, m.ConversationMessage.id)).all()
+        return {"id": ticket.id, "order_id": ticket.order_id, "status": ticket.status, "topic": ticket.topic,
+                "messages": [{"id": message.id, "actor_type": message.actor_type, "body": message.body, "created_at": message.created_at} for message in messages]}
+
+
+@app.post("/tickets/{ticket_id}/messages")
+def add_ticket_message(ticket_id: str, body: TicketMessageInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    if not ("customer" in actor.roles or "support" in actor.roles):
+        raise HTTPException(403, "Role required")
+    with db.begin():
+        ticket = _visible_ticket(db, actor, ticket_id, lock=True)
+        if "support" in actor.roles and ticket.support_actor_id == actor.subject:
+            author = "support"
+        elif "customer" in actor.roles and ticket.customer_id == actor.customer_id:
+            author = "customer"
+        else:
+            raise HTTPException(404, "Ticket unavailable")
+        if ticket.status != "open":
+            raise HTTPException(409, "Ticket is closed")
+        message = m.ConversationMessage(ticket_id=ticket.id, actor_type=author, body=body.body, created_at=datetime.now(timezone.utc))
+        db.add(message)
+        db.flush()
+        d.audit(db, actor.subject, "ticket_message", "ticket", ticket.id, details={"message_id": message.id, "actor_type": author})
+    return {"id": message.id, "ticket_id": ticket.id, "actor_type": author}
+
+
+@app.post("/tickets/{ticket_id}/resolve")
+def resolve_ticket(ticket_id: str, body: TicketMessageInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    actor.require("support")
+    with db.begin():
+        ticket = db.get(m.Ticket, ticket_id, with_for_update=True)
+        if ticket is None or ticket.support_actor_id != actor.subject:
+            raise HTTPException(404, "Ticket unavailable")
+        if ticket.status != "open":
+            raise HTTPException(409, "Ticket is closed")
+        message = m.ConversationMessage(ticket_id=ticket.id, actor_type="support", body=body.body, created_at=datetime.now(timezone.utc))
+        db.add(message)
+        db.flush()
+        ticket.status = "resolved"
+        d.audit(db, actor.subject, "resolve_ticket", "ticket", ticket.id, details={"message_id": message.id})
+    return {"id": ticket.id, "status": ticket.status}
 
 
 @app.post("/supervisor/tickets/{ticket_id}/assign")
 def assign_ticket(ticket_id: str, body: TicketAssignInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("supervisor")
     with db.begin():
-        ticket = db.get(m.Ticket, ticket_id)
+        ticket = db.get(m.Ticket, ticket_id, with_for_update=True)
         if not ticket:
             raise HTTPException(404, "Ticket unavailable")
+        if ticket.status != "open":
+            raise HTTPException(409, "Ticket is closed")
         ticket.support_actor_id = body.support_actor_id
         d.audit(db, actor.subject, "assign_ticket", "ticket", ticket_id, details={"support_actor_id": body.support_actor_id})
     return {"id": ticket_id, "support_actor_id": body.support_actor_id}

@@ -146,6 +146,15 @@ def record_inspection(db: Session, actor: str, return_id: str, passed: bool, not
     db.flush()
     request.status = "inspected_passed" if passed else "exception"
     audit(db, actor, "record_inspection", "return", return_id, bundle=request.policy_bundle_id, details={"passed": passed})
+    if not passed:
+        ticket = m.Ticket(customer_id=request.customer_id, order_id=request.order_id, return_id=return_id, topic="return inspection exception")
+        db.add(ticket)
+        db.flush()
+        summary = "Warehouse inspection did not pass; manual review required."
+        if note.strip():
+            summary += " Note: " + note.strip()[:200]
+        db.add(m.ConversationMessage(ticket_id=ticket.id, actor_type="warehouse", body=summary, created_at=aware(at)))
+        audit(db, actor, "create_ticket", "ticket", ticket.id, bundle=request.policy_bundle_id, details={"return_id": return_id, "inspection_id": inspection.id})
     return inspection
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -201,9 +201,11 @@ class Ticket(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"))
     order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"), nullable=True)
+    return_id: Mapped[str | None] = mapped_column(ForeignKey("return_requests.id"), nullable=True, unique=True, index=True)
     topic: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(24), default="open")
     support_actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
 
 
 class ConversationMessage(Base):

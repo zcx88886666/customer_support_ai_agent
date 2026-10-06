@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import re
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import or_, select
@@ -246,7 +246,7 @@ def remove_preference(key: str, actor: Principal = Depends(principal), db: Sessi
 
 
 @app.get("/tickets")
-def tickets(actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+def tickets(offset: int = Query(default=0, ge=0), actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     if "supervisor" in actor.roles:
         query = select(m.Ticket)
     else:
@@ -258,7 +258,8 @@ def tickets(actor: Principal = Depends(principal), db: Session = Depends(get_db)
         if not conditions:
             raise HTTPException(403, "Role required")
         query = select(m.Ticket).where(or_(*conditions))
-    return [{"id": ticket.id, "order_id": ticket.order_id, "status": ticket.status, "topic": ticket.topic} for ticket in db.scalars(query.limit(100)).all()]
+    query = query.order_by(m.Ticket.created_at.desc(), m.Ticket.id.desc()).offset(offset).limit(100)
+    return [{"id": ticket.id, "order_id": ticket.order_id, "return_id": ticket.return_id, "status": ticket.status, "topic": ticket.topic} for ticket in db.scalars(query).all()]
 
 
 def _visible_ticket(db: Session, actor: Principal, ticket_id: str, *, lock: bool = False) -> m.Ticket:
@@ -280,7 +281,7 @@ def get_ticket(ticket_id: str, actor: Principal = Depends(principal), db: Sessio
     with db.begin():
         ticket = _visible_ticket(db, actor, ticket_id, lock=True)
         messages = db.scalars(select(m.ConversationMessage).where(m.ConversationMessage.ticket_id == ticket.id).order_by(m.ConversationMessage.created_at, m.ConversationMessage.id)).all()
-        return {"id": ticket.id, "order_id": ticket.order_id, "status": ticket.status, "topic": ticket.topic,
+        return {"id": ticket.id, "order_id": ticket.order_id, "return_id": ticket.return_id, "status": ticket.status, "topic": ticket.topic,
                 "messages": [{"id": message.id, "actor_type": message.actor_type, "body": message.body, "created_at": message.created_at} for message in messages]}
 
 

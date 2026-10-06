@@ -10,7 +10,7 @@ type Shipment = { id: string; status: string; delivered_at: string | null };
 type Proposal = { id: string; return_id: string; amount_cents: number; status: string };
 type DeadlineAlert = { return_id: string; kind: string; deadline_at: string };
 type Profile = { consent: boolean; preferences: Record<string, string> };
-type Ticket = { id: string; topic: string; status: string; order_id: string | null };
+type Ticket = { id: string; topic: string; status: string; order_id: string | null; return_id?: string | null };
 type TicketDetail = Ticket & { messages: { id: string; actor_type: string; body: string; created_at: string }[] };
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -41,6 +41,7 @@ export default function Home() {
   const threadId = useRef("");
   const submission = useRef({ signature: "", key: "" });
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [ticketsHasMore, setTicketsHasMore] = useState(false);
   const [ticketDetail, setTicketDetail] = useState<TicketDetail | null>(null);
   const [ticketText, setTicketText] = useState("");
   const [supportAssignee, setSupportAssignee] = useState("");
@@ -56,7 +57,7 @@ export default function Home() {
 
   useLayoutEffect(() => {
     threadId.current = crypto.randomUUID();
-    setOrders([]); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setAnswer(""); setConfirmed(false); setProfile(null); setLanguageChoice("中文"); setTickets([]); setTicketDetail(null); setTicketText(""); setSupportAssignee(""); setProposals([]); setDeadlineAlerts([]); setNotice("");
+    setOrders([]); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setAnswer(""); setConfirmed(false); setProfile(null); setLanguageChoice("中文"); setTickets([]); setTicketsHasMore(false); setTicketDetail(null); setTicketText(""); setSupportAssignee(""); setProposals([]); setDeadlineAlerts([]); setNotice("");
     submission.current = { signature: "", key: "" };
   }, [actor, role]);
 
@@ -158,11 +159,12 @@ export default function Home() {
     } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); }
   }
 
-  async function loadTickets() {
+  async function loadTickets(offset = 0) {
     try {
-      const values = await call("/tickets") as Ticket[];
-      setTickets(values);
-      setTicketDetail((current) => current && values.some((ticket) => ticket.id === current.id) ? current : null);
+      const values = await call(`/tickets?offset=${offset}`) as Ticket[];
+      setTickets((current) => offset ? [...current, ...values.filter((ticket) => !current.some((seen) => seen.id === ticket.id))] : values);
+      setTicketsHasMore(values.length === 100);
+      if (!offset) setTicketDetail((current) => current && values.some((ticket) => ticket.id === current.id) ? current : null);
       setNotice("");
     } catch (error) { showError(error); }
   }
@@ -196,7 +198,7 @@ export default function Home() {
     {authMode === "oidc" ? <p><button disabled={!keycloak || !!token} onClick={() => keycloak?.login()}>Keycloak 登录</button><button className="secondary" disabled={!keycloak || !token} onClick={() => keycloak?.logout()}>退出</button>{token ? "已登录" : "未登录"}</p> : <div className="card"><strong>本机 Mock 身份</strong><label>角色<select value={role} onChange={(e) => setRole(e.target.value as Role)}><option value="customer">customer</option><option value="support">support</option><option value="warehouse">warehouse</option><option value="supervisor">supervisor</option></select></label><label>演示 Actor<input value={actor} onChange={(e) => setActor(e.target.value)} /></label></div>}
     {notice && <p className={notice.includes("Error") ? "error" : "success"}>{notice}</p>}
     <div className="grid">
-      {(role === "customer" || role === "support" || role === "supervisor") && <section className="card"><h2>{role === "customer" ? "我的工单" : role === "support" ? "已分配工单" : "人工工单分配"}</h2>{role === "support" && <p>我的 Actor ID：{actor}</p>}<button onClick={loadTickets}>刷新工单</button><ul>{tickets.map((ticket) => <li key={ticket.id}><button className="secondary" onClick={() => openTicket(ticket.id)}>{ticket.id}</button> · {ticket.topic} · {ticket.status}</li>)}</ul>{role === "supervisor" && <><label>支持人员 Actor ID<input value={supportAssignee} onChange={(e) => setSupportAssignee(e.target.value)} /></label>{tickets.filter((ticket) => ticket.status === "open").map((ticket) => <button key={ticket.id} disabled={!supportAssignee.trim()} onClick={() => assignTicket(ticket.id)}>分配 {ticket.id}</button>)}</>}{ticketDetail && <div><h3>工单 {ticketDetail.id} · {ticketDetail.status}</h3><ul>{ticketDetail.messages.map((item) => <li key={item.id}>{item.actor_type} · {item.body}</li>)}</ul>{ticketDetail.status === "open" && role !== "supervisor" && <><label>工单消息<textarea value={ticketText} onChange={(e) => setTicketText(e.target.value)} /></label><button disabled={!ticketText.trim()} onClick={() => ticketAction("messages")}>发送工单消息</button>{role === "support" && <button disabled={!ticketText.trim()} onClick={() => ticketAction("resolve")}>回复并结案</button>}</>}</div>}</section>}
+      {(role === "customer" || role === "support" || role === "supervisor") && <section className="card"><h2>{role === "customer" ? "我的工单" : role === "support" ? "已分配工单" : "人工工单分配"}</h2>{role === "support" && <p>我的 Actor ID：{actor}</p>}<button onClick={() => loadTickets()}>刷新工单</button><ul>{tickets.map((ticket) => <li key={ticket.id}><button className="secondary" onClick={() => openTicket(ticket.id)}>{ticket.id}</button> · {ticket.topic} · {ticket.status}{ticket.return_id && <> · 退货 {ticket.return_id}</>}</li>)}</ul>{ticketsHasMore && <button className="secondary" onClick={() => loadTickets(tickets.length)}>加载更多工单</button>}{role === "supervisor" && <><label>支持人员 Actor ID<input value={supportAssignee} onChange={(e) => setSupportAssignee(e.target.value)} /></label>{tickets.filter((ticket) => ticket.status === "open").map((ticket) => <button key={ticket.id} disabled={!supportAssignee.trim()} onClick={() => assignTicket(ticket.id)}>分配 {ticket.id}</button>)}</>}{ticketDetail && <div><h3>工单 {ticketDetail.id} · {ticketDetail.status}</h3>{ticketDetail.return_id && <p>关联退货：{ticketDetail.return_id}</p>}<ul>{ticketDetail.messages.map((item) => <li key={item.id}>{item.actor_type} · {item.body}</li>)}</ul>{ticketDetail.status === "open" && role !== "supervisor" && <><label>工单消息<textarea value={ticketText} onChange={(e) => setTicketText(e.target.value)} /></label><button disabled={!ticketText.trim()} onClick={() => ticketAction("messages")}>发送工单消息</button>{role === "support" && <button disabled={!ticketText.trim()} onClick={() => ticketAction("resolve")}>回复并结案</button>}</>}</div>}</section>}
       {role === "customer" && <>
         <section className="card"><h2>我的订单</h2><button onClick={loadOrders}>刷新订单</button><ul>{orders.map((order) => <li key={order.id}><button className="secondary" onClick={() => loadOrder(order.id)}>{order.id}</button> {order.status}</li>)}</ul><label>订单编号<input value={orderId} onChange={(e) => { setOrderId(e.target.value); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); }} /></label><button onClick={() => loadOrder(orderId)}>查看商品</button><pre>{JSON.stringify(items, null, 2)}</pre></section>
         <section className="card"><h2>咨询</h2><label>问题<textarea value={message} onChange={(e) => setMessage(e.target.value)} /></label>{(shipments.length > 1 || pendingShipmentOptions.length > 1) && <label>查询包裹<select value={shipmentId} onChange={(e) => setShipmentId(e.target.value)}><option value="">请选择包裹</option>{(shipments.length > 1 ? shipments.map((row) => row.id) : pendingShipmentOptions).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>}<label>Agent 模式<select value={agentMode} onChange={(e) => setAgentMode(e.target.value as "single" | "collab")}><option value="single">单图基线</option><option value="collab">双专职协作</option></select></label><button onClick={sendChat}>发送</button><pre>{answer}</pre></section>

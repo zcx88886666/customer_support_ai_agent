@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from resolveai import domain as d
 from resolveai import models as m
 from resolveai.api import app
 from resolveai.auth import Principal, principal
@@ -14,6 +17,7 @@ FOREIGN_CUSTOMER = {"x-mock-actor": "cust-02", "x-mock-role": "customer"}
 SUPPORT = {"x-mock-actor": "support-a", "x-mock-role": "support"}
 FOREIGN_SUPPORT = {"x-mock-actor": "support-b", "x-mock-role": "support"}
 SUPERVISOR = {"x-mock-actor": "supervisor-a", "x-mock-role": "supervisor"}
+WAREHOUSE = {"x-mock-actor": "warehouse-a", "x-mock-role": "warehouse"}
 
 
 def test_ticket_messages_and_resolution_preserve_ownership_and_refund_gate(session_factory):
@@ -108,5 +112,69 @@ def test_multirole_customer_support_cannot_resolve_unassigned_ticket(session_fac
             assert db.get(m.Ticket, "own-ticket").status == "open"
             assert db.get(m.Ticket, "assigned-ticket").status == "resolved"
             assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_failed_inspection_creates_one_linked_human_ticket_without_refund(session_factory):
+    clock = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+
+    with session_factory.begin() as db:
+        request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1, "not needed", True, "exception-return", clock)
+        d.record_receipt(db, "warehouse-a", request.id, 1, clock)
+        return_id = request.id
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            path = f"/warehouse/returns/{return_id}/inspection"
+            first = client.post(path, json={"passed": False, "note": "damaged carton"}, headers=WAREHOUSE)
+            assert first.status_code == 200
+            assert client.post(path, json={"passed": False, "note": "damaged carton"}, headers=WAREHOUSE).status_code == 200
+            listed = client.get("/tickets", headers=CUSTOMER).json()
+            assert len(listed) == 1 and listed[0]["return_id"] == return_id
+            ticket_id = listed[0]["id"]
+            detail = client.get(f"/tickets/{ticket_id}", headers=CUSTOMER).json()
+            assert detail["return_id"] == return_id
+            assert detail["messages"][0]["actor_type"] == "warehouse"
+            assert "damaged carton" in detail["messages"][0]["body"]
+            assert client.get(f"/tickets/{ticket_id}", headers=FOREIGN_CUSTOMER).status_code == 404
+            assert client.get(f"/tickets/{ticket_id}", headers=SUPPORT).status_code == 404
+            assert client.post(f"/returns/{return_id}/proposal", headers=WAREHOUSE).status_code == 409
+            assert client.post(f"/supervisor/tickets/{ticket_id}/assign", json={"support_actor_id": "support-a"}, headers=SUPERVISOR).status_code == 200
+            assert client.post(f"/tickets/{ticket_id}/resolve", json={"body": "We reviewed the inspection. A refund cannot be issued from this ticket."}, headers=SUPPORT).status_code == 200
+            assert client.get(f"/returns/{return_id}", headers=CUSTOMER).json()["status"] == "exception"
+        with session_factory() as db:
+            assert db.scalar(select(func.count()).select_from(m.Ticket).where(m.Ticket.return_id == return_id)) == 1
+            assert db.scalar(select(func.count()).select_from(m.RefundProposal)) == 0
+            assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+            assert {event.action for event in db.scalars(select(m.AuditEvent).where(m.AuditEvent.entity_type == "ticket", m.AuditEvent.entity_id == ticket_id))} >= {"create_ticket", "assign_ticket", "resolve_ticket"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ticket_queue_pages_newest_first_without_losing_overflow(session_factory):
+    start = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        for index in range(105):
+            db.add(m.Ticket(id=f"ticket-{index:03d}", customer_id="cust-01", topic="synthetic review",
+                            created_at=start + timedelta(seconds=index)))
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            first = client.get("/tickets", headers=CUSTOMER).json()
+            second = client.get("/tickets?offset=100", headers=CUSTOMER).json()
+            assert len(first) == 100 and len(second) == 5
+            assert first[0]["id"] == "ticket-104"
+            assert {row["id"] for row in first + second} == {f"ticket-{index:03d}" for index in range(105)}
     finally:
         app.dependency_overrides.clear()

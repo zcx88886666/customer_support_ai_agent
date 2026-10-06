@@ -107,6 +107,7 @@ def score(case: dict, statuses: dict, observations: dict, db) -> dict[str, bool]
     proposals = db.scalars(select(m.RefundProposal)).all()
     approvals = db.scalars(select(m.Approval)).all()
     ledgers = db.scalars(select(m.RefundLedger)).all()
+    tickets = db.scalars(select(m.Ticket)).all()
     audits = db.scalars(select(m.AuditEvent)).all()
     checks = {
         "http_statuses": statuses == gold["http_statuses"],
@@ -115,6 +116,7 @@ def score(case: dict, statuses: dict, observations: dict, db) -> dict[str, bool]
         "proposal_statuses": sorted(proposal.status for proposal in proposals) == gold["proposal_statuses"],
         "approval_decisions": sorted(approval.decision for approval in approvals) == gold["approval_decisions"],
         "ledger_count": len(ledgers) == gold["ledger_count"],
+        "ticket_count": len(tickets) == gold.get("ticket_count", 0),
         "order_version": order.version == gold["order_version"],
         "audit_actions": dict(Counter(event.action for event in audits)) == gold["audit_actions"],
         "return_owner": all(request.customer_id == case["fixture"]["customer_id"] and request.order_id == order_id for request in returns),
@@ -122,6 +124,13 @@ def score(case: dict, statuses: dict, observations: dict, db) -> dict[str, bool]
         "worker_replay": observations.get("worker_replay_issued") == 0,
         "refund_authorized": all(_ledger_authorized(db, ledger) for ledger in ledgers),
     }
+    if gold.get("linked_exception_ticket"):
+        linked = [ticket for ticket in tickets if ticket.return_id == observations.get("return_id")]
+        checks["linked_exception_ticket"] = (len(linked) == 1 and len(returns) == 1
+            and linked[0].customer_id == returns[0].customer_id
+            and linked[0].order_id == returns[0].order_id
+            and linked[0].status == "open"
+            and db.scalar(select(m.ConversationMessage).where(m.ConversationMessage.ticket_id == linked[0].id, m.ConversationMessage.actor_type == "warehouse")) is not None)
     if case["scenario"] == "approved_refund":
         checks["return_idempotent"] = observations.get("same_return_on_retry") is True
     if case["scenario"] == "stale_proposal":

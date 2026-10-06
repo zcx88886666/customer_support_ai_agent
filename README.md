@@ -79,6 +79,8 @@ Open `http://localhost:3000`. The page exposes customer, support, warehouse, and
 
 A human handoff returns a `ticket_id`. The customer can read and message their own ticket through `GET /tickets`, `GET /tickets/{ticket_id}`, and `POST /tickets/{ticket_id}/messages`. A supervisor assigns an open ticket through `POST /supervisor/tickets/{ticket_id}/assign`; only that support actor can reply or close it with `POST /tickets/{ticket_id}/resolve` and a final message. These actions are also available in the web UI. [Ticket workflow verification](docs/implementation/ticket-handoff-2026-10-06.md) covers ownership and audit. Resolving a ticket has no refund authority or effect on a return decision.
 
+A failed warehouse inspection also creates one [linked human ticket](docs/implementation/inspection-exception-ticket-2026-10-06.md) automatically. Refresh **My tickets** to see its return ID and the warehouse note; **加载更多工单** pages through older work. A supervisor still assigns support; resolving the ticket does not turn the inspection into a pass or permit a refund. Existing failed inspections are linked during database migration. The API uses `GET /tickets?offset=0` for the newest 100 and increments the offset for older pages.
+
 An isolated [live worker deadline check](docs/implementation/deadline-delivery-2026-10-03.md) verified that the 30-second loop created one due-soon and one overdue alert with audit events and no refund; a later loop did not duplicate them.
 
 For a full mock HTTP replay on the seeded local database, run `.venv/bin/python scripts/demo_workflow.py`. It is safe to rerun with the same idempotency key; a second run must not add another ledger entry.

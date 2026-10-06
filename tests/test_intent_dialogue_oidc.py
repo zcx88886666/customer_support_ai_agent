@@ -1,6 +1,7 @@
 """Same development dialogue labels across mock and actual OIDC transports."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -69,3 +70,77 @@ def test_same_scorer_rejects_changed_per_turn_state_and_ledger_count(db):
     assert all(probe.dialogue_score(case, turns, db).values())
     assert not all(probe.dialogue_score(case, [{**turns[0], 'ledger_count': 1}], db).values())
     assert not all(probe.dialogue_score(case, [{**turns[0], 'status': 'answered'}], db).values())
+
+
+def test_each_case_failure_keeps_its_own_stack(tmp_path):
+    for case_id, error_type in (('first', ValueError), ('second', RuntimeError)):
+        try:
+            raise error_type('synthetic ' + case_id)
+        except Exception as error:
+            probe.save_case_failure(tmp_path, case_id, error)
+    assert (tmp_path / 'first' / 'error.json').exists()
+    assert (tmp_path / 'second' / 'error.json').exists()
+    assert (tmp_path / 'first' / 'error.json').read_text() != (tmp_path / 'second' / 'error.json').read_text()
+
+
+def test_interrupt_keeps_active_case_turns_database_and_child_cleanup(tmp_path, monkeypatch):
+    case = next(c for c in run_intent_dialogue.load_cases() if c['case_id'] == 'intent-dialogue-tracking-followup')
+    class Admin:
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def execute(self, *_args): pass
+    class Database:
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def scalar(self, *_args): return 0
+    class Factory:
+        def begin(self): return Database()
+        def __call__(self): return Database()
+    class Engine:
+        def dispose(self): pass
+    class Process:
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): return 0
+    stopped = []
+    def stop(process): stopped.append(process)
+    class Response:
+        status_code = 200
+        headers = {}
+        def json(self):
+            return {'status': 'answered', 'answer': 'synthetic private first turn',
+                    'route': {'route': 'knowledge', 'intents': []}, 'plan_revision': 1,
+                    'resource_usage': {'llm_attempts': 0}}
+    class Client:
+        calls = 0
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def get(self, *_args, **_kwargs): return SimpleNamespace(status_code=401)
+        def post(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise KeyboardInterrupt()
+            return Response()
+    monkeypatch.setattr(probe.psycopg, 'connect', lambda *_a, **_k: Admin())
+    monkeypatch.setattr(probe, 'make_engine', lambda *_a: Engine())
+    monkeypatch.setattr(probe, 'sessionmaker', lambda *_a, **_k: Factory())
+    monkeypatch.setattr(probe, 'seed_demo', lambda *_a: None)
+    monkeypatch.setattr(probe, 'seed_extra_package', lambda *_a: None)
+    monkeypatch.setattr(probe, 'index_bundle', lambda *_a: None)
+    monkeypatch.setattr(probe.subprocess, 'run', lambda *_a, **_k: None)
+    monkeypatch.setattr(probe.subprocess, 'Popen', lambda *_a, **_k: Process())
+    monkeypatch.setattr(probe, 'spawn_api', lambda *_a, **_k: Process())
+    monkeypatch.setattr(probe, 'wait_healthy', lambda *_a: None)
+    monkeypatch.setattr(probe, 'available_port', lambda: 12345)
+    monkeypatch.setattr(probe.httpx, 'Client', Client)
+    monkeypatch.setattr(probe, 'stop', stop)
+    row = probe.run_case(case, 'synthetic-run', SimpleNamespace(admin_url='postgresql://synthetic@localhost/postgres'),
+                         {'customer-one': 'synthetic-token', 'customer-two': 'synthetic-other'},
+                         tmp_path, datetime.now(timezone.utc))
+    assert row['status'] == 'incomplete' and row['error_type'] == 'KeyboardInterrupt'
+    assert row['database'].startswith('ra_dialogue_')
+    assert len(row['turns']) == 1 and row['turns'][0]['return_count'] == 0
+    assert 'answer' not in row['turns'][0]
+    assert len(set(stopped)) == 3  # old API, restarted API and MCP
+    assert (tmp_path / case['case_id'] / 'error.json').exists()

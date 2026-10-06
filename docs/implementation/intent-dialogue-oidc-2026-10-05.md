@@ -11,7 +11,7 @@ The API process restarts after the first turn of every multi-turn case. Pending 
 - Six focused contract regressions passed: supported account mapping, package chronology, incomplete/cancellation summary, redacted turn artifacts, explicit no-key/release environment, and rejection of changed per-turn status/ledger counts by the shared scorer. They failed before their helpers were implemented.
 - Full Python suite: **261 passed, four optional PostgreSQL/Docker skips**, in25.19seconds. No production code, Prompt catalog or dataset labels changed.
 
-One fresh read-only review is pending.
+A fresh read-only code review found that interrupting an active case discarded its completed turn evidence, and that multiple case errors could overwrite one shared error log. Both findings went through one regression fix pass: an interrupted case now records its generated database name, completed redacted turns, error type and per-case traceback before the run stops; separate case failures retain separate logs. The two added regressions passed, as did the focused **8/8** tests and full Python suite (**263 passed, four optional skips**, 24.50 seconds). The review did not run the Docker or paid-provider replay itself. The prior 12/12 real replay remains the measured transport result; no new full replay was run after this reporting-only change.
 
 ```bash
 .venv/bin/python scripts/verify_intent_dialogue_oidc.py

@@ -25,8 +25,8 @@
 - [x] Write failing contract regressions for explicit customer mapping, chronological additional package fixture, per-turn/terminal scoring and cancellation summary. Expected: fail before verifier helper exists.
 - [x] Implement bounded private process replay, safe reports and guarded fixture cleanup. Expected: focused contract tests pass.
 - [x] Run all twelve real OIDC/PostgreSQL dialogue cases and full Python suite. Expected: twelve complete passes or concrete production defects reproduced and fixed with red→green tests.
-- [ ] Obtain one fresh read-only final review, fix Critical/Important findings in one pass.
-- [ ] Record actual results and limitations, diff check and explicit local commits.
+- [x] Obtain one fresh read-only final review, fix Critical/Important findings in one pass.
+- [x] Record actual results and limitations, diff check and explicit local commits.
 
 ## Rulings
 

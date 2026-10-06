@@ -96,6 +96,13 @@ def stop(process):
             process.wait(timeout=5)
 
 
+def save_case_failure(folder, case_id, error):
+    case_folder = folder / case_id
+    case_folder.mkdir(exist_ok=True)
+    save_failure(case_folder, error)
+    return str((case_folder / 'error.json').relative_to(folder))
+
+
 def run_case(case, run_id, server, tokens, folder, seed_clock):
     name = 'ra_dialogue_' + uuid4().hex[:16]
     account = customer_account(case['fixture']['customer_id'])
@@ -162,9 +169,9 @@ def run_case(case, run_id, server, tokens, folder, seed_clock):
             checks['no_paid_model_calls'] = all(turn['model_attempts'] == 0 for turn in turns if turn['http_status'] == 200)
             checks['restart_keeps_dialogue_state'] = row['api_restarts'] == int(len(turns) > 1)
             row['status'] = 'pass' if all(checks.values()) else 'fail'
-    except Exception as error:
+    except (Exception, KeyboardInterrupt) as error:
         row['error_type'] = type(error).__name__
-        save_failure(folder, error)
+        row['error_log'] = save_case_failure(folder, case['case_id'], error)
     finally:
         cleanup_errors = []
         for process in reversed(processes):
@@ -201,6 +208,9 @@ def main():
             with (folder / 'case_results.jsonl').open('a') as output:
                 output.write(json.dumps(row, ensure_ascii=False) + '\n')
             print(json.dumps({'case_id': row['case_id'], 'status': row['status']}), flush=True)
+            if row.get('error_type') == 'KeyboardInterrupt':
+                cancelled = True
+                break
     except (Exception, KeyboardInterrupt) as error:
         cancelled = isinstance(error, KeyboardInterrupt)
         error_type = type(error).__name__

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -108,6 +110,40 @@ def create_return(db: Session, customer_id: str, order_id: str, item_id: str, qu
     order.version += 1
     audit(db, customer_id, "create_return", "return", request.id, before=old, after=order.version, bundle=request.policy_bundle_id, key=key)
     return request
+
+
+def request_return_review(db: Session, customer_id: str, order_id: str, item_id: str, quantity: int,
+                          reason: str, confirmed: bool, key: str, at: datetime, plan_revision: int = 1) -> tuple[m.Ticket, str]:
+    if not confirmed or not reason.strip() or not key.strip() or quantity < 1:
+        raise DomainError("confirmation_required", "Confirm the order, item, quantity and reason before requesting review", 422)
+    payload = json.dumps([order_id, item_id, quantity, reason.strip(), plan_revision], ensure_ascii=False, separators=(",", ":"))
+    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    # A customer row serializes same-customer review keys, including requests for different orders.
+    if db.get(m.Customer, customer_id, with_for_update=True) is None:
+        raise DomainError("order_not_found", "Order unavailable", 404)
+    previous = db.scalar(select(m.Ticket).where(m.Ticket.customer_id == customer_id, m.Ticket.review_key == key))
+    if previous:
+        if previous.review_payload_hash != fingerprint or not previous.topic.startswith("return eligibility review: "):
+            raise DomainError("idempotency_conflict", "Key reused with a different review request")
+        return previous, previous.topic.removeprefix("return eligibility review: ")
+    order = db.scalar(select(m.Order).where(m.Order.id == order_id, m.Order.customer_id == customer_id).with_for_update())
+    if order is None:
+        raise DomainError("order_not_found", "Order unavailable", 404)
+    result = eligibility(db, customer_id, order_id, item_id, quantity, at)
+    reason_code = result["reason"]
+    if result["eligible"]:
+        raise DomainError("review_not_needed", "This return is eligible for normal submission")
+    if reason_code not in {"outside_window", "product_exception", "delivery_unverified", "unsupported_order"}:
+        raise DomainError(reason_code, "Correct the return request before asking for policy review")
+    ticket = m.Ticket(customer_id=customer_id, order_id=order_id, topic=f"return eligibility review: {reason_code}",
+                      review_key=key, review_payload_hash=fingerprint)
+    db.add(ticket)
+    db.flush()
+    summary = f"Customer requested return eligibility review for item {item_id}, quantity {quantity}. Reason: {reason.strip()}"
+    db.add(m.ConversationMessage(ticket_id=ticket.id, actor_type="customer", body=summary, created_at=aware(at)))
+    audit(db, customer_id, "create_return_review_ticket", "ticket", ticket.id, bundle=result["policy_bundle_id"], key=key,
+          details={"order_id": order_id, "item_id": item_id, "quantity": quantity, "reason_code": reason_code})
+    return ticket, reason_code
 
 
 def record_receipt(db: Session, actor: str, return_id: str, quantity: int, at: datetime) -> m.WarehouseReceipt:

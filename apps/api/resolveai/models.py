@@ -202,10 +202,13 @@ class Ticket(Base):
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"))
     order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"), nullable=True)
     return_id: Mapped[str | None] = mapped_column(ForeignKey("return_requests.id"), nullable=True, unique=True, index=True)
+    review_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    review_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     topic: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(24), default="open")
     support_actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    __table_args__ = (Index("uq_tickets_customer_review_key", "customer_id", "review_key", unique=True),)
 
 
 class ConversationMessage(Base):

@@ -102,6 +102,16 @@ def create_return(body: ReturnInput, actor: Principal = Depends(principal), db: 
     return {"id": request.id, "status": request.status}
 
 
+@app.post("/returns/review")
+def request_return_review(body: ReturnInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    actor.require("customer")
+    with db.begin():
+        ticket, reason_code = d.request_return_review(db, actor.customer_id, body.order_id, body.order_item_id,
+                                                       body.quantity, body.reason, body.confirmed, body.idempotency_key,
+                                                       datetime.now(timezone.utc), body.plan_revision)
+    return {"status": "human_review", "ticket_id": ticket.id, "reason_code": reason_code}
+
+
 @app.get("/returns/{return_id}")
 def get_return(return_id: str, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("customer")

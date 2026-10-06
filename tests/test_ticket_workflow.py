@@ -228,3 +228,45 @@ def test_receipt_shortage_is_reported_for_human_review_before_receipt(session_fa
             assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == "report_receipt_dispute", m.AuditEvent.entity_id == return_id)) == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_policy_ineligible_owned_return_can_request_idempotent_human_review(session_factory):
+    with session_factory.begin() as db:
+        db.get(m.Shipment, "demo-shipment-01").delivered_at = datetime.now(timezone.utc) - timedelta(days=2)
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    body = {"order_id": "demo-order-02", "order_item_id": "demo-item-02", "quantity": 1,
+            "reason": "parcel never arrived", "confirmed": True, "idempotency_key": "review-undelivered"}
+    try:
+        with TestClient(app) as client:
+            path = "/returns/review"
+            assert client.post(path, json=body, headers=FOREIGN_CUSTOMER).status_code == 404
+            assert client.post(path, json={**body, "order_item_id": "demo-item-01"}, headers=CUSTOMER).status_code == 404
+            assert client.post(path, json={**body, "confirmed": False}, headers=CUSTOMER).status_code == 422
+            assert client.post(path, json={**body, "order_id": "demo-order-01", "order_item_id": "demo-item-01"}, headers=CUSTOMER).status_code == 409
+            assert client.post(path, json={**body, "quantity": 2}, headers=CUSTOMER).status_code == 409
+            first = client.post(path, json=body, headers=CUSTOMER)
+            assert first.status_code == 200 and first.json()["status"] == "human_review"
+            assert first.json()["reason_code"] == "delivery_unverified"
+            ticket_id = first.json()["ticket_id"]
+            assert client.post(path, json=body, headers=CUSTOMER).json()["ticket_id"] == ticket_id
+            assert client.post(path, json={**body, "reason": "changed"}, headers=CUSTOMER).status_code == 409
+            assert client.get(f"/tickets/{ticket_id}", headers=FOREIGN_CUSTOMER).status_code == 404
+            detail = client.get(f"/tickets/{ticket_id}", headers=CUSTOMER).json()
+            assert detail["order_id"] == body["order_id"] and detail["return_id"] is None
+            assert "parcel never arrived" in detail["messages"][0]["body"]
+            assert client.post(f"/supervisor/tickets/{ticket_id}/assign", json={"support_actor_id": "support-a"}, headers=SUPERVISOR).status_code == 200
+            assert client.post(f"/tickets/{ticket_id}/resolve", json={"body": "We will investigate the missing parcel."}, headers=SUPPORT).status_code == 200
+            assert client.post(path, json=body, headers=CUSTOMER).json()["ticket_id"] == ticket_id
+        with session_factory() as db:
+            assert db.scalar(select(func.count()).select_from(m.Ticket).where(m.Ticket.id == ticket_id)) == 1
+            assert db.scalar(select(func.count()).select_from(m.ReturnRequest)) == 0
+            assert db.scalar(select(func.count()).select_from(m.RefundProposal)) == 0
+            assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+            assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == "create_return_review_ticket", m.AuditEvent.entity_id == ticket_id)) == 1
+    finally:
+        app.dependency_overrides.clear()

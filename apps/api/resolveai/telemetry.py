@@ -17,13 +17,18 @@ _langfuse = None
 
 
 def should_export_span(span):
-    from langfuse.span_filter import is_default_export_span
-
-    attributes = span.attributes or {}
-    if attributes.get("http.route") == "/health" or attributes.get("url.path") == "/health" or attributes.get("code.function.name") == "resolveai.api.health":
-        return False
     scope = span.instrumentation_scope.name if span.instrumentation_scope else ""
-    return is_default_export_span(span) or scope in ("resolveai.agent", "fastapi")
+    if scope != "resolveai.agent":
+        return False
+    name = span.name
+    if name == "http.request":
+        return (span.attributes or {}).get("resolveai.cloud_export") is True
+    return name.startswith(("llm.", "specialist.")) or name in ("agent.request_resources", "commerce.mcp")
+
+
+def should_export_request(path: str, run_id: str | None, case_id: str | None) -> bool:
+    """Export agent chat or an explicitly enabled, case-linked evaluation request."""
+    return path in ("/chat", "/chat/stream") or (os.getenv("LANGFUSE_EXPORT_EVAL_TRACES") == "1" and bool(run_id and case_id))
 
 
 def mask_cloud_spans(*, params):

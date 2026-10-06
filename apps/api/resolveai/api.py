@@ -18,7 +18,7 @@ from .checkpoint import setup_checkpointer
 from .prompts import PromptRegistry
 from .models_config import ModelRegistry
 from .request_budget import BudgetLimits
-from .telemetry import configure_telemetry, tracer, current_trace_id
+from .telemetry import configure_telemetry, tracer, current_trace_id, should_export_request
 from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, PolicyDraftInput, PreferenceInput, ReceiptInput, ReturnInput, TicketAssignInput
 
 @asynccontextmanager
@@ -42,12 +42,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http
 async def trace_request(request, call_next):
     if request.url.path == "/health":
         return await call_next(request)
-    with tracer().start_as_current_span("http.request") as span:
-        span.set_attribute("http.method", request.method)
-        for header, attribute in (("x-eval-run-id", "run_id"), ("x-eval-case-id", "case_id")):
-            value = request.headers.get(header, "")
-            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
-                span.set_attribute(attribute, value)
+    attributes = {"http.method": request.method}
+    for header, attribute in (("x-eval-run-id", "run_id"), ("x-eval-case-id", "case_id")):
+        value = request.headers.get(header, "")
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+            attributes[attribute] = value
+    if should_export_request(request.url.path, attributes.get("run_id"), attributes.get("case_id")):
+        attributes["resolveai.cloud_export"] = True
+    with tracer().start_as_current_span("http.request", attributes=attributes):
         response = await call_next(request)
         if current_trace_id():
             response.headers["x-trace-id"] = current_trace_id()

@@ -1,8 +1,10 @@
 # ResolveAI implementation status
 
-> Verified 2026-10-05 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
+> Verified through 2026-10-06 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
 
 ## Current snapshot
+
+- [Browser actor-switch containment](implementation/browser-actor-switch-2026-10-06.md) discards stale API successes/errors across actor or role transitions, including A→B→A, and clears the previous actor's return ID and notice before paint. Same-actor mock role handoff retains the synthetic return ID. Three browser regressions reproduced old behavior; an independent review found the round-trip gap and weak notice test, both addressed. Final targeted browser tests and production build are recorded in the report. The local Compose OIDC endpoints were down, so this slice did not repeat the prior real-OIDC browser journey.
 
 - [Real OIDC multi-turn dialogue](implementation/intent-dialogue-oidc-2026-10-05.md) replayed the existing twelve cases with private HTTP MCP/API processes and freshly migrated PostgreSQL databases: **12/12,293/293 checks,23 turns and nine API restarts**. Foreign customers could not resume threads; two expected owned returns and zero ledgers remained. No provider/Cloud calls; successful owned resources were removed. A fresh review found lost active-case evidence on interruption and overwritten case error logs; both were fixed with two new regressions. The focused **8/8** tests and full **263-test suite** passed, with four optional skips. The original real replay predates this reporting fix; author-written labels remain pending human review and the locked gate stays false.
 

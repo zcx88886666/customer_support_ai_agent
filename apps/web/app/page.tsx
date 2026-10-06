@@ -33,6 +33,7 @@ export default function Home() {
   const [returnId, setReturnId] = useState("");
   const [reason, setReason] = useState("不再需要");
   const [quantity, setQuantity] = useState(1);
+  const [warehouseNote, setWarehouseNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [deadlineAlerts, setDeadlineAlerts] = useState<DeadlineAlert[]>([]);
@@ -57,7 +58,7 @@ export default function Home() {
 
   useLayoutEffect(() => {
     threadId.current = crypto.randomUUID();
-    setOrders([]); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setAnswer(""); setConfirmed(false); setProfile(null); setLanguageChoice("中文"); setTickets([]); setTicketsHasMore(false); setTicketDetail(null); setTicketText(""); setSupportAssignee(""); setProposals([]); setDeadlineAlerts([]); setNotice("");
+    setOrders([]); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setAnswer(""); setConfirmed(false); setProfile(null); setLanguageChoice("中文"); setTickets([]); setTicketsHasMore(false); setTicketDetail(null); setTicketText(""); setSupportAssignee(""); setWarehouseNote(""); setProposals([]); setDeadlineAlerts([]); setNotice("");
     submission.current = { signature: "", key: "" };
   }, [actor, role]);
 
@@ -133,7 +134,10 @@ export default function Home() {
     } catch (error) { showError(error); }
   }
   async function warehouse(path: string, body: object) {
-    try { const value = await call(path, { method: "POST", body: JSON.stringify(body) }); setNotice(JSON.stringify(value)); } catch (error) { showError(error); }
+    try {
+      const value = await call(path, { method: "POST", body: JSON.stringify(body) });
+      setNotice(path.endsWith("/receipt-dispute") ? `数量异常已转人工，退货进入异常状态。工单 ${value.ticket_id}` : JSON.stringify(value));
+    } catch (error) { showError(error); }
   }
   async function loadProposals() {
     try {
@@ -205,7 +209,7 @@ export default function Home() {
         <section className="card"><h2>答复语言偏好</h2><p>仅在明确同意后保存。语言偏好只改变答复文字，不改变订单、退货或退款规则。</p><button onClick={async () => { const requestedGeneration = identityGeneration.current; try { await loadProfile(); if (identityGeneration.current === requestedGeneration) setNotice(""); } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); } }}>读取偏好</button>{profile && <><p>记忆同意：{profile.consent ? "已同意" : "未同意"} · 已保存语言：{profile.preferences.language || "无"}</p>{!profile.consent ? <button onClick={() => updateProfile("/profile/memory-consent", "POST", { consent: true })}>同意保存偏好</button> : <><label>答复语言<select value={languageChoice} onChange={(e) => setLanguageChoice(e.target.value)}><option value="中文">中文</option><option value="English">English</option></select></label><button onClick={() => updateProfile("/profile/preferences/language", "PUT", { value: languageChoice, confirmed: true })}>确认并保存语言</button><button className="secondary" onClick={() => updateProfile("/profile/preferences/language", "DELETE")}>删除语言偏好</button><button className="secondary" onClick={() => updateProfile("/profile/memory-consent", "POST", { consent: false })}>撤回记忆同意并清除偏好</button></>}</>}</section>
         <section className="card"><h2>申请退货</h2><p>订单 {orderId} · 商品 {items[0]?.id || "请先查看商品"}</p><label>数量<input type="number" min="1" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label>原因<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><label><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />我确认订单、商品、数量、原因并提交申请</label><button disabled={!confirmed || !items[0]} onClick={submitReturn}>提交退货</button><p>{returnId}</p></section>
       </>}
-      {role === "warehouse" && <section className="card"><h2>仓库</h2><label>退货申请 ID<input value={returnId} onChange={(e) => setReturnId(e.target.value)} /></label><label>实收数量<input type="number" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/receipt`, { quantity })}>记录入库</button><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: true, note: "intact" })}>质检通过</button><button className="secondary" onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: false, note: "exception" })}>质检异常</button><button onClick={() => warehouse(`/returns/${encodeURIComponent(returnId)}/proposal`, {})}>生成规则提案</button></section>}
+      {role === "warehouse" && <section className="card"><h2>仓库</h2><label>退货申请 ID<input value={returnId} onChange={(e) => setReturnId(e.target.value)} /></label><label>实收数量<input type="number" min="0" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/receipt`, { quantity })}>记录入库</button><label>数量异常说明<input value={warehouseNote} onChange={(e) => setWarehouseNote(e.target.value)} /></label><button className="secondary" disabled={!returnId.trim() || !warehouseNote.trim() || !Number.isInteger(quantity) || quantity < 0} onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/receipt-dispute`, { observed_quantity: quantity, note: warehouseNote.trim() })}>上报数量异常并转人工</button><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: true, note: "intact" })}>质检通过</button><button className="secondary" onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: false, note: "exception" })}>质检异常</button><button onClick={() => warehouse(`/returns/${encodeURIComponent(returnId)}/proposal`, {})}>生成规则提案</button></section>}
       {role === "supervisor" && <section className="card"><h2>主管审批</h2><button onClick={loadProposals}>刷新待审提案与期限</button><ul>{proposals.map((proposal) => <li key={proposal.id}>{proposal.id} · ¥{(proposal.amount_cents / 100).toFixed(2)}<br /><button onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: true })}>批准</button><button className="secondary" onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: false })}>拒绝</button></li>)}</ul><h3>退款处理期限</h3><ul>{deadlineAlerts.map((alert) => <li key={`${alert.return_id}:${alert.kind}`}>{alert.return_id} · {alert.kind === "overdue" ? "已逾期" : "24 小时内到期"} · {new Date(alert.deadline_at).toLocaleString()}</li>)}</ul><p>批准后由受控退款 Worker 执行单笔模拟退款。</p></section>}
     </div>
   </main>;

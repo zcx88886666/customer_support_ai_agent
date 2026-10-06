@@ -111,7 +111,7 @@ def create_return(db: Session, customer_id: str, order_id: str, item_id: str, qu
 
 
 def record_receipt(db: Session, actor: str, return_id: str, quantity: int, at: datetime) -> m.WarehouseReceipt:
-    request = db.get(m.ReturnRequest, return_id)
+    request = db.get(m.ReturnRequest, return_id, with_for_update=True)
     if not request:
         raise DomainError("return_not_found", "Return unavailable", 404)
     existing = db.scalar(select(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == return_id))
@@ -127,6 +127,33 @@ def record_receipt(db: Session, actor: str, return_id: str, quantity: int, at: d
     request.status = "received"
     audit(db, actor, "record_receipt", "return", return_id, bundle=request.policy_bundle_id, details={"quantity": quantity})
     return receipt
+
+
+def report_receipt_dispute(db: Session, actor: str, return_id: str, observed_quantity: int, note: str, at: datetime) -> m.Ticket:
+    request = db.get(m.ReturnRequest, return_id, with_for_update=True)
+    if not request:
+        raise DomainError("return_not_found", "Return unavailable", 404)
+    if observed_quantity < 0 or observed_quantity == request.quantity:
+        raise DomainError("no_receipt_discrepancy", "Observed quantity must differ from the requested return quantity")
+    summary = f"Warehouse observed {observed_quantity} of {request.quantity} expected return items. Note: {note.strip()[:200]}"
+    existing = db.scalar(select(m.Ticket).where(m.Ticket.return_id == return_id))
+    if existing:
+        original = db.scalar(select(m.ConversationMessage).where(m.ConversationMessage.ticket_id == existing.id, m.ConversationMessage.actor_type == "warehouse").order_by(m.ConversationMessage.created_at, m.ConversationMessage.id))
+        if existing.topic != "warehouse receipt discrepancy" or original is None or original.body != summary:
+            raise DomainError("receipt_dispute_conflict", "A different return exception is already recorded")
+        return existing
+    if request.status != "return_requested" or db.scalar(select(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == return_id)):
+        raise DomainError("invalid_state", "Return is no longer awaiting warehouse receipt")
+    ticket = m.Ticket(customer_id=request.customer_id, order_id=request.order_id, return_id=return_id, topic="warehouse receipt discrepancy")
+    db.add(ticket)
+    db.flush()
+    db.add(m.ConversationMessage(ticket_id=ticket.id, actor_type="warehouse", body=summary, created_at=aware(at)))
+    request.status = "exception"
+    audit(db, actor, "report_receipt_dispute", "return", return_id, bundle=request.policy_bundle_id,
+          details={"ticket_id": ticket.id, "observed_quantity": observed_quantity, "expected_quantity": request.quantity})
+    audit(db, actor, "create_ticket", "ticket", ticket.id, bundle=request.policy_bundle_id,
+          details={"return_id": return_id, "observed_quantity": observed_quantity, "expected_quantity": request.quantity})
+    return ticket
 
 
 def record_inspection(db: Session, actor: str, return_id: str, passed: bool, note: str, at: datetime) -> m.Inspection:

@@ -19,7 +19,7 @@ from .prompts import PromptRegistry
 from .models_config import ModelRegistry
 from .request_budget import BudgetLimits
 from .telemetry import configure_telemetry, tracer, current_trace_id, should_export_request
-from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, PolicyDraftInput, PreferenceInput, ReceiptInput, ReturnInput, TicketAssignInput, TicketMessageInput
+from .schemas import ChatInput, ConsentInput, DecisionInput, InspectionInput, PolicyDraftInput, PreferenceInput, ReceiptDisputeInput, ReceiptInput, ReturnInput, TicketAssignInput, TicketMessageInput
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -117,6 +117,14 @@ def receipt(return_id: str, body: ReceiptInput, actor: Principal = Depends(princ
     with db.begin():
         result = d.record_receipt(db, actor.subject, return_id, body.quantity, body.received_at or datetime.now(timezone.utc))
     return {"id": result.id, "return_id": return_id}
+
+
+@app.post("/warehouse/returns/{return_id}/receipt-dispute")
+def receipt_dispute(return_id: str, body: ReceiptDisputeInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    actor.require("warehouse")
+    with db.begin():
+        ticket = d.report_receipt_dispute(db, actor.subject, return_id, body.observed_quantity, body.note, datetime.now(timezone.utc))
+    return {"ticket_id": ticket.id, "status": ticket.status, "return_id": return_id}
 
 
 @app.post("/warehouse/returns/{return_id}/inspection")

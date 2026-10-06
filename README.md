@@ -81,6 +81,8 @@ A human handoff returns a `ticket_id`. The customer can read and message their o
 
 A failed warehouse inspection also creates one [linked human ticket](docs/implementation/inspection-exception-ticket-2026-10-06.md) automatically. Refresh **My tickets** to see its return ID and the warehouse note; **加载更多工单** pages through older work. A supervisor still assigns support; resolving the ticket does not turn the inspection into a pass or permit a refund. Existing failed inspections are linked during database migration. The API uses `GET /tickets?offset=0` for the newest 100 and increments the offset for older pages.
 
+For a shortage or other quantity mismatch before receipt, warehouse staff can enter the observed count and an explanation, then choose **上报数量异常并转人工**. The same action is `POST /warehouse/returns/{id}/receipt-dispute` with `observed_quantity` and `note`. It creates one linked ticket and places the return in `exception`. An exact retry returns that ticket; closing the support ticket does not permit receipt or refund. See the [receipt discrepancy report](docs/implementation/receipt-dispute-handoff-2026-10-06.md). Manual adjudication of the disputed return remains a separate workflow.
+
 An isolated [live worker deadline check](docs/implementation/deadline-delivery-2026-10-03.md) verified that the 30-second loop created one due-soon and one overdue alert with audit events and no refund; a later loop did not duplicate them.
 
 For a full mock HTTP replay on the seeded local database, run `.venv/bin/python scripts/demo_workflow.py`. It is safe to rerun with the same idempotency key; a second run must not add another ledger entry.

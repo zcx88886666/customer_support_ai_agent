@@ -178,3 +178,53 @@ def test_ticket_queue_pages_newest_first_without_losing_overflow(session_factory
             assert {row["id"] for row in first + second} == {f"ticket-{index:03d}" for index in range(105)}
     finally:
         app.dependency_overrides.clear()
+
+
+def test_receipt_shortage_is_reported_for_human_review_before_receipt(session_factory):
+    clock = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1, "not needed", True, "shortage-return", clock)
+        return_id = request.id
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            path = f"/warehouse/returns/{return_id}/receipt-dispute"
+            body = {"observed_quantity": 0, "note": "parcel empty"}
+            assert client.post(path, json=body, headers=CUSTOMER).status_code == 403
+            assert client.post(path, json={"observed_quantity": -1, "note": "invalid"}, headers=WAREHOUSE).status_code == 422
+            assert client.post(path, json={"observed_quantity": 0, "note": "   "}, headers=WAREHOUSE).status_code == 422
+            assert client.post("/warehouse/returns/missing/receipt-dispute", json=body, headers=WAREHOUSE).status_code == 404
+            assert client.post(path, json={"observed_quantity": 1, "note": "same"}, headers=WAREHOUSE).status_code == 409
+            first = client.post(path, json=body, headers=WAREHOUSE)
+            assert first.status_code == 200
+            ticket_id = first.json()["ticket_id"]
+            assert client.get(f"/returns/{return_id}", headers=CUSTOMER).json()["status"] == "exception"
+            assert client.post(path, json=body, headers=WAREHOUSE).json()["ticket_id"] == ticket_id
+            assert client.post(path, json={"observed_quantity": 2, "note": "different count"}, headers=WAREHOUSE).status_code == 409
+            assert client.post(f"/warehouse/returns/{return_id}/receipt", json={"quantity": 1}, headers=WAREHOUSE).status_code == 409
+            assert client.post(f"/warehouse/returns/{return_id}/inspection", json={"passed": False, "note": "incomplete"}, headers=WAREHOUSE).status_code == 409
+            assert client.post(f"/returns/{return_id}/proposal", headers=WAREHOUSE).status_code == 409
+            assert client.get(f"/tickets/{ticket_id}", headers=FOREIGN_CUSTOMER).status_code == 404
+            assert "parcel empty" in client.get(f"/tickets/{ticket_id}", headers=CUSTOMER).json()["messages"][0]["body"]
+            assert client.post(f"/supervisor/tickets/{ticket_id}/assign", json={"support_actor_id": "support-a"}, headers=SUPERVISOR).status_code == 200
+            assert client.post(f"/tickets/{ticket_id}/resolve", json={"body": "Review complete; warehouse must verify actual quantity."}, headers=SUPPORT).status_code == 200
+            retry = client.post(path, json=body, headers=WAREHOUSE)
+            assert retry.status_code == 200 and retry.json()["ticket_id"] == ticket_id
+            assert retry.json()["status"] == "resolved"
+            assert client.post(f"/warehouse/returns/{return_id}/receipt", json={"quantity": 1}, headers=WAREHOUSE).status_code == 409
+            assert client.post(f"/returns/{return_id}/proposal", headers=WAREHOUSE).status_code == 409
+        with session_factory() as db:
+            assert db.get(m.ReturnRequest, return_id).status == "exception"
+            assert db.scalar(select(func.count()).select_from(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == return_id)) == 0
+            assert db.scalar(select(func.count()).select_from(m.Ticket).where(m.Ticket.return_id == return_id)) == 1
+            assert db.scalar(select(func.count()).select_from(m.RefundProposal)) == 0
+            assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+            assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == "create_ticket", m.AuditEvent.entity_id == ticket_id)) == 1
+            assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == "report_receipt_dispute", m.AuditEvent.entity_id == return_id)) == 1
+    finally:
+        app.dependency_overrides.clear()

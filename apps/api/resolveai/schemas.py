@@ -21,6 +21,19 @@ class ReceiptInput(BaseModel):
     received_at: datetime | None = None
 
 
+class ReceiptDisputeInput(BaseModel):
+    observed_quantity: int = Field(ge=0)
+    note: str = Field(min_length=1, max_length=200)
+
+    @field_validator("note")
+    @classmethod
+    def nonblank_note(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Discrepancy note must contain text")
+        return value
+
+
 class InspectionInput(BaseModel):
     passed: bool
     note: str = Field(default="", max_length=200)

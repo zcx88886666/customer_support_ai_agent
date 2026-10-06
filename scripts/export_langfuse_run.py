@@ -12,10 +12,12 @@ from pathlib import Path
 from resolveai.prompts import ROOT
 
 
-def pages(fetch):
+def pages(fetch, *, deadline: float | None = None):
     cursor = None
     for _ in range(100):
         for attempt in range(5):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Cloud readback deadline expired")
             try:
                 response = fetch(cursor)
                 break
@@ -23,17 +25,21 @@ def pages(fetch):
                 status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
                 if status != 429 or attempt == 4:
                     raise
-                time.sleep(15 * (attempt + 1))
+                delay = 15 * (attempt + 1)
+                if deadline is not None:
+                    delay = min(delay, max(0, deadline - time.monotonic()))
+                time.sleep(delay)
         yield response.data
         next_cursor = response.meta.cursor
         if not next_cursor or next_cursor == cursor:
             return
         cursor = next_cursor
-        time.sleep(0.15)
+        delay = 0.15 if deadline is None else min(0.15, max(0, deadline - time.monotonic()))
+        time.sleep(delay)
     raise RuntimeError("Cloud pagination exceeded 100 pages")
 
 
-def export_run(run_id: str) -> dict:
+def export_run(run_id: str, *, refresh: bool = False, deadline: float | None = None) -> dict:
     if not os.getenv("LANGFUSE_PUBLIC_KEY") or not os.getenv("LANGFUSE_SECRET_KEY"):
         raise RuntimeError("Langfuse keys are not configured")
     from langfuse import Langfuse
@@ -46,7 +52,8 @@ def export_run(run_id: str) -> dict:
     output = ROOT / "observability/exports" / run_id
     traces = output / "traces"
     traces.mkdir(parents=True, exist_ok=True)
-    lf = Langfuse(public_key=os.environ["LANGFUSE_PUBLIC_KEY"], secret_key=os.environ["LANGFUSE_SECRET_KEY"], base_url=os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"), tracing_enabled=False)
+    timeout = 5 if deadline is None else max(1, min(5, int(max(1, deadline - time.monotonic()))))
+    lf = Langfuse(public_key=os.environ["LANGFUSE_PUBLIC_KEY"], secret_key=os.environ["LANGFUSE_SECRET_KEY"], base_url=os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"), tracing_enabled=False, timeout=timeout)
     found = 0
     observations = 0
     scores = 0
@@ -57,12 +64,12 @@ def export_run(run_id: str) -> dict:
     for trace_id in trace_ids:
         target = traces / f"{trace_id}.json"
         saved = json.loads(target.read_text(encoding="utf-8")) if target.exists() else None
-        if saved is None or not saved["observations"] or not saved["scores"]:
+        if refresh or saved is None or not saved["observations"] or not saved["scores"]:
             obs = []
-            for group in pages(lambda cursor: lf.api.observations.get_many(trace_id=trace_id, fields="core,basic,metadata", limit=100, cursor=cursor)):
+            for group in pages(lambda cursor: lf.api.observations.get_many(trace_id=trace_id, fields="core,basic,metadata", limit=100, cursor=cursor), deadline=deadline):
                 obs.extend({"id": row.id, "trace_id": row.trace_id, "parent_observation_id": row.parent_observation_id, "name": row.name, "type": row.type, "start_time": row.start_time.isoformat(), "run_id": (row.metadata or {}).get("attributes.run_id"), "case_id": (row.metadata or {}).get("attributes.case_id")} for row in group)
             score_rows = []
-            for group in pages(lambda cursor: lf.api.scores_v3.get_many_v3(trace_id=trace_id, fields="subject", limit=100, cursor=cursor)):
+            for group in pages(lambda cursor: lf.api.scores_v3.get_many_v3(trace_id=trace_id, fields="subject", limit=100, cursor=cursor), deadline=deadline):
                 score_rows.extend({"id": row.id, "name": row.name, "value": row.value, "data_type": row.data_type} for row in group)
             saved = {"trace_id": trace_id, "observations": obs, "scores": score_rows}
             target.write_text(json.dumps(saved, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")

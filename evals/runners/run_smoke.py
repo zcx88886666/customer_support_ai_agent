@@ -82,10 +82,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--release", default=settings.prompt_release)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--case-id", action="append", default=[], help="Run only this development case; may be repeated")
     args = parser.parse_args()
     if args.release != settings.prompt_release:
         parser.error("Set PROMPT_RELEASE to the requested --release before running so runtime and manifest agree")
     cases = load_cases()
+    unknown = sorted(set(args.case_id) - {case["case_id"] for case in cases})
+    if unknown:
+        parser.error("Unknown case ID: " + ", ".join(unknown))
+    scope = "targeted" if args.case_id else "full"
+    if args.case_id:
+        selected = set(args.case_id)
+        cases = [case for case in cases if case["case_id"] in selected]
     registry = PromptRegistry(args.release)
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
@@ -105,9 +113,10 @@ def main():
     counts = Counter(row["status"] for row in results)
     critical_failures = [row["case_id"] for row in results if row["risk_tier"] == "critical" and row["status"] != "pass"]
     telemetry = "not_configured" if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")) else "submitted_unreconciled" if all(row.get("cloud_score_submitted") for row in results if row.get("trace_id")) else "incomplete"
-    summary = {"run_id": run_id, "counts": dict(counts), "unique_cases": len(cases), "executions": len(results), "critical_failures": critical_failures, "gate_pass": counts.get("fail", 0) == 0 and counts.get("incomplete", 0) == 0, "telemetry_sync": telemetry}
+    targeted_pass = counts.get("fail", 0) == 0 and counts.get("incomplete", 0) == 0
+    summary = {"run_id": run_id, "scope": scope, "selected_case_ids": [case["case_id"] for case in cases], "counts": dict(counts), "unique_cases": len(cases), "executions": len(results), "critical_failures": critical_failures, "targeted_pass": targeted_pass, "gate_pass": scope == "full" and targeted_pass, "telemetry_sync": telemetry}
     (folder / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "prompt_release_id": args.release, "prompt_hashes": registry.manifest["prompts"], "source_git_commit": registry.manifest.get("source_git_commit"), "policy_bundle_id": "policy-demo-v1", "model": "deterministic-mock", "scorer_version": "smoke-v2", "seed": "demo-fixed-v1"}
+    manifest = {"run_id": run_id, "created_at": datetime.now(timezone.utc).isoformat(), "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(), "scope": scope, "selected_case_ids": summary["selected_case_ids"], "prompt_release_id": args.release, "prompt_hashes": registry.manifest["prompts"], "source_git_commit": registry.manifest.get("source_git_commit"), "policy_bundle_id": "policy-demo-v1", "model": "deterministic-mock", "scorer_version": "smoke-v2", "seed": "demo-fixed-v1"}
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     lines = ["<html><meta charset='utf-8'><title>ResolveAI smoke report</title><body>", f"<h1>Run {html.escape(run_id)}</h1>", f"<p>{len(cases)} unique cases; {len(results)} executions; {counts.get('pass', 0)} pass, {counts.get('fail', 0)} fail, {counts.get('incomplete', 0)} incomplete.</p>", "<table border='1'><tr><th>Case</th><th>Split</th><th>Mode</th><th>Status</th><th>Checks</th></tr>"]
     for row in results:
@@ -115,7 +124,7 @@ def main():
     lines.append("</table></body></html>")
     (folder / "report.html").write_text("\n".join(lines), encoding="utf-8")
     print(json.dumps({**summary, "report": str(folder)}, ensure_ascii=False))
-    raise SystemExit(0 if summary["gate_pass"] else 1)
+    raise SystemExit(0 if targeted_pass else 1)
 
 
 if __name__ == "__main__":

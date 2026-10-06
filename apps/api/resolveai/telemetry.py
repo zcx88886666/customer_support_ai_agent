@@ -18,6 +18,12 @@ _langfuse = None
 
 def should_export_span(span):
     scope = span.instrumentation_scope.name if span.instrumentation_scope else ""
+    if scope == "fastapi":
+        attributes = span.attributes or {}
+        if span.name in ("POST", "POST /chat", "POST /chat/stream"):
+            path = attributes.get("url.path") or attributes.get("http.route")
+            return path in ("/chat", "/chat/stream") and attributes.get("http.request.method", "POST") == "POST"
+        return span.name == "fastapi.endpoint" and attributes.get("code.function.name") in ("resolveai.api.chat", "resolveai.api.chat_stream")
     if scope != "resolveai.agent":
         return False
     name = span.name
@@ -41,7 +47,11 @@ def mask_cloud_spans(*, params):
             # Counts are useful for cost tracking; authentication tokens are private.
             if key in ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens") and isinstance(value, int):
                 continue
-            if any(part in key.lower() for part in ("authorization", "token", "api_key", "secret", "address", "payment", "customer_name", "gen_ai.prompt", "gen_ai.completion", "gen_ai.input.messages", "gen_ai.output.messages", "langfuse.trace.input", "langfuse.trace.output", "langfuse.observation.input", "langfuse.observation.output")):
+            lowered = key.lower()
+            if (lowered.startswith(("url.", "server.")) or lowered in ("http.url", "http.target")
+                    or lowered.startswith("http.request.") and lowered != "http.request.method"
+                    or lowered.startswith("http.response.") and lowered != "http.response.status_code"
+                    or any(part in lowered for part in ("authorization", "token", "api_key", "secret", "address", "payment", "customer_name", "gen_ai.prompt", "gen_ai.completion", "gen_ai.input.messages", "gen_ai.output.messages", "langfuse.trace.input", "langfuse.trace.output", "langfuse.observation.input", "langfuse.observation.output"))):
                 sensitive.append(key)
         if sensitive:
             patches[identifier] = OtelSpanPatch(delete_attributes=tuple(sensitive), set_attributes={"masking.applied": True})

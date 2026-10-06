@@ -2,6 +2,8 @@
 
 ResolveAI is a synthetic, single-company e-commerce after-sales demonstration. It offers a no-key local mock path for customer order lookup, read-only policy and logistics specialists, confirmed return requests, warehouse inspection, supervisor approval, and one idempotent simulated refund. It does not connect to a real payment provider. PostgreSQL with pgvector is the v6 primary database; SQLite is the lightweight fallback for local mock tests. The [v6 specification](plans/resolveai-v6.md) describes the full target; [verified status](docs/STATUS.md) distinguishes implemented work from remaining integration work.
 
+The first runnable development preview is [v0.1.0](docs/releases/v0.1.0.md). It does not pass the locked release gate.
+
 ## Docker Compose run (recommended)
 
 From the repository root, start the local mock stack with PostgreSQL 17, pgvector, API, web UI, Redis/Celery worker and scheduler, Commerce MCP, OTel Collector, and Jaeger. No API keys are needed:

@@ -88,7 +88,7 @@ The [specialist planning follow-up](specialist-tool-planning-2026-10-05.md) impl
 
 The [real OIDC multi-turn dialogue replay](intent-dialogue-oidc-2026-10-05.md) passed 12/12 author-written development cases through private API/MCP and fresh PostgreSQL. Fresh read-only review found interruption evidence loss and shared error-log overwrite; both were fixed with red→green regressions. The final Python suite passed 263 tests with four optional skips. Independent human labels, a locked split and real-model paired coverage remain open.
 
-The [browser actor-switch fix](browser-actor-switch-2026-10-06.md) suppresses previous-identity API results and errors, including after an A→B→A transition, and clears old return IDs/notices. The targeted browser regression and production build passed locally; the Compose OIDC web/Keycloak endpoints were down, so the prior authenticated browser journeys were not rerun. Broader recovery and accessibility coverage remains open.
+The [browser actor-switch fix](browser-actor-switch-2026-10-06.md) suppresses previous-identity API results and errors, including after an A→B→A transition, and clears old return IDs/notices. The targeted browser regression and production build passed locally; the rebuilt Compose stack then passed four real-Keycloak role views and seven API/MCP authorization checks. The isolated authenticated refund journey, broader recovery and accessibility coverage remain open.
 
 | Gate | Current evidence and next concrete action |
 |---|---|

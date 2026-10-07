@@ -6,9 +6,11 @@ import hashlib
 import html
 import json
 import os
+import sqlite3
 import tempfile
 import time
 from collections import Counter
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -32,6 +34,28 @@ else:
 DATASET = ROOT / "evals/datasets/core_business_dev_v1.jsonl"
 
 
+def failure_database_path(case_id: object) -> Path:
+    encoded = json.dumps(case_id, ensure_ascii=True, sort_keys=True, default=str).encode("ascii")
+    return Path("failure_dbs") / (hashlib.sha256(encoded).hexdigest()[:16] + ".sqlite3")
+
+
+def snapshot_sqlite(source: Path, destination: Path) -> None:
+    """Publish a consistent, private snapshot even when the source uses WAL."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".snapshot-", suffix=".sqlite3", dir=destination.parent)
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        with closing(sqlite3.connect(source, timeout=3)) as original:
+            with closing(sqlite3.connect(temporary)) as saved:
+                original.backup(saved)
+                if saved.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                    raise sqlite3.DatabaseError("SQLite failure snapshot failed integrity check")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def capture_review_tickets(db) -> list[dict]:
     """Capture committed review evidence before terminal actions can change the database."""
     rows = []
@@ -51,8 +75,17 @@ def capture_review_tickets(db) -> list[dict]:
 
 def load_cases() -> list[dict]:
     cases = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not cases or not all(isinstance(case, dict) for case in cases):
+        raise ValueError("Core business cases must be nonempty objects")
     ids = [case.get("case_id") for case in cases]
-    if not cases or len(ids) != len(set(ids)):
+    for case_id in ids:
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError("Core business case ID must be a nonempty UTF-8 string")
+        try:
+            case_id.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("Core business case ID must be a nonempty UTF-8 string") from exc
+    if len(ids) != len(set(ids)):
         raise ValueError("Core business cases must have unique IDs")
     for case in cases:
         if (case.get("schema_version") != "v1" or case.get("suite") != "core_business_dev_v1"
@@ -179,11 +212,14 @@ def execute_scripted(client: TestClient | None, case: dict, run_id: str, chat_ro
     return statuses, observations
 
 
-def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
+def run_case(case: dict, run_id: str, seed_clock: datetime, *,
+             failure_artifacts_dir: Path | None = None) -> dict:
     with tempfile.TemporaryDirectory(prefix="resolveai-core-business-") as temp:
-        engine = make_engine(f"sqlite:///{Path(temp) / 'case.db'}")
+        database_path = Path(temp) / "case.db"
+        engine = make_engine(f"sqlite:///{database_path}")
         Base.metadata.create_all(engine)
         factory = sessionmaker(engine, expire_on_commit=False)
+        result = None
         with factory.begin() as db:
             run_business.seed_demo(db, seed_clock)
         if case["terminal_scenario"] == "expired_window":
@@ -232,17 +268,28 @@ def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
             last_chat = chat_rows[-1]
             payload = last_chat["payload"]
             checks.update(score_chat_phase(case, chat_rows, chat_return_ids, chat_ledger_count, observations))
-            return {"case_id": case["case_id"], "split": case["split"], "risk_tier": case["risk_tier"],
+            result = {"case_id": case["case_id"], "split": case["split"], "risk_tier": case["risk_tier"],
                     "status": "pass" if all(checks.values()) else "fail", "checks": checks,
                     "chat_status": payload.get("status"), "chat_error_code": payload.get("code"),
                     "chat_http_status": last_chat["http_status"], "http_statuses": statuses,
                     "trace_ids": [row["trace_id"] for row in chat_rows],
                     "seed_clock": seed_clock.isoformat(),
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
+            return result
         finally:
             worker.SessionLocal = original_worker_factory
             app.dependency_overrides.clear()
             engine.dispose()
+            if failure_artifacts_dir is not None and (result is None or result["status"] != "pass") and database_path.exists():
+                relative = failure_database_path(case["case_id"])
+                snapshot = failure_artifacts_dir / relative
+                try:
+                    snapshot_sqlite(database_path, snapshot)
+                    if result is not None:
+                        result["failure_database"] = str(relative)
+                except (OSError, sqlite3.Error) as exc:
+                    if result is not None:
+                        result["failure_database_error"] = type(exc).__name__
 
 
 def main() -> None:
@@ -256,10 +303,14 @@ def main() -> None:
     results = []
     for case in cases:
         try:
-            results.append(run_case(case, run_id, seed_clock))
+            results.append(run_case(case, run_id, seed_clock, failure_artifacts_dir=folder))
         except Exception as exc:
-            results.append({"case_id": case["case_id"], "split": case["split"], "risk_tier": case["risk_tier"],
-                            "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)})
+            row = {"case_id": case["case_id"], "split": case["split"], "risk_tier": case["risk_tier"],
+                   "status": "incomplete", "error": type(exc).__name__ + ": " + str(exc)}
+            relative = failure_database_path(case["case_id"])
+            if (folder / relative).exists():
+                row["failure_database"] = str(relative)
+            results.append(row)
     counts = Counter(row["status"] for row in results)
     development_pass = counts.get("pass", 0) == len(cases)
     summary = {"run_id": run_id, "suite": "core_business_dev_v1", "unique_cases": len(cases),

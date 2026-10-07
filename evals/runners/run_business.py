@@ -23,9 +23,9 @@ from resolveai.db import Base, get_db, make_engine
 from resolveai.prompts import ROOT
 from resolveai.seed import seed_demo
 if __package__:
-    from .score import _ledger_authorized
+    from .score import _all_refund_balanced, _ledger_authorized
 else:
-    from score import _ledger_authorized
+    from score import _all_refund_balanced, _ledger_authorized
 
 
 DATASET = ROOT / "evals/datasets/business_workflows_v2.jsonl"
@@ -123,6 +123,7 @@ def score(case: dict, statuses: dict, observations: dict, db) -> dict[str, bool]
         "approval_before_refund": observations.get("preapproval_issued") == 0,
         "worker_replay": observations.get("worker_replay_issued") == 0,
         "refund_authorized": all(_ledger_authorized(db, ledger) for ledger in ledgers),
+        "refund_balance": _all_refund_balanced(db),
     }
     if gold.get("linked_exception_ticket"):
         linked = [ticket for ticket in tickets if ticket.return_id == observations.get("return_id")]

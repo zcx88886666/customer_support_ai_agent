@@ -36,6 +36,9 @@ MUTANTS = (
     ("approval_timestamp_after_refund", "approved_refund"),
     ("approval_audit_wrong_actor", "approved_refund"),
     ("refund_audit_wrong_version", "approved_refund"),
+    ("refund_item_balance_extra_cent", "stale_proposal"),
+    ("denied_return_has_refund_balance", "inspection_exception"),
+    ("other_order_has_refund_balance", "inspection_exception"),
 )
 
 
@@ -105,6 +108,34 @@ def inject(name: str):
             return original(db, actor, action, entity, entity_id, **kwargs)
 
         with patch.object(d, "audit", changed):
+            yield
+        return
+    if name == "refund_item_balance_extra_cent":
+        original = d.issue_refund
+
+        def changed(db, proposal_id, key, at):
+            ledger = original(db, proposal_id, key, at)
+            db.get(m.OrderItem, ledger.order_item_id).refunded_cents += 1
+            return ledger
+
+        with patch.object(d, "issue_refund", changed):
+            yield
+        return
+    if name in {"denied_return_has_refund_balance", "other_order_has_refund_balance"}:
+        original = d.record_inspection
+
+        def changed(db, actor, return_id, passed, note, at):
+            inspection = original(db, actor, return_id, passed, note, at)
+            if not passed:
+                request = db.get(m.ReturnRequest, return_id)
+                item_id = (request.order_item_id if name == "denied_return_has_refund_balance"
+                           else "demo-item-07")
+                item = db.get(m.OrderItem, item_id)
+                item.refunded_cents = 1
+                item.refunded_quantity = 1
+            return inspection
+
+        with patch.object(d, "record_inspection", changed):
             yield
         return
     if name in {"refund_audit_omitted", "return_audit_omitted"}:

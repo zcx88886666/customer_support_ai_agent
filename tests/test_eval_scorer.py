@@ -134,6 +134,73 @@ def test_scorer_binds_refund_audit_versions_to_approved_proposal(db):
     assert not score_case(gold, payload, 200, db)[0]["refund_authorized"]
 
 
+def test_scorer_requires_item_refund_balance_to_match_ledgers(db):
+    request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 1,
+                              "scorer case", True, "scorer-item-balance", AT)
+    d.record_receipt(db, "warehouse-test", request.id, 1, AT + timedelta(hours=1))
+    d.record_inspection(db, "warehouse-test", request.id, True, "intact", AT + timedelta(hours=2))
+    proposal = d.create_proposal(db, request.id, AT + timedelta(hours=3))
+    d.decide_proposal(db, "supervisor-test", proposal.id, True, AT + timedelta(hours=4))
+    d.issue_refund(db, proposal.id, f"refund:{proposal.id}", AT + timedelta(hours=5))
+    item = db.get(m.OrderItem, "demo-item-03")
+    gold = {"fixture": {"customer_id": "cust-01", "order_id": "demo-order-03"},
+            "gold": {"ledger_count": 1, "return_count": 1}}
+    payload = {"status": "answered", "answer": "模拟退款已执行", "return_id": request.id}
+    assert score_case(gold, payload, 200, db)[0]["refund_authorized"]
+
+    item.refunded_cents += 1
+    db.flush()
+    assert not score_case(gold, payload, 200, db)[0]["refund_authorized"]
+    item.refunded_cents -= 1
+    item.refunded_quantity += 1
+    db.flush()
+    assert not score_case(gold, payload, 200, db)[0]["refund_authorized"]
+
+
+def test_scorer_rejects_refunded_balance_without_any_ledger(db):
+    item = db.get(m.OrderItem, "demo-item-03")
+    item.refunded_cents = 1
+    item.refunded_quantity = 1
+    db.flush()
+    gold = {"fixture": {"customer_id": "cust-01", "order_id": "demo-order-03"},
+            "gold": {"ledger_count": 0, "return_count": 0}}
+    checks, ledger_count = score_case(gold, {"status": "answered", "answer": ""}, 200, db)
+    assert ledger_count == 0
+    assert checks["refund_balance"] is False
+
+
+def test_scorer_rejects_refunded_balance_on_another_seeded_order(db):
+    item = db.get(m.OrderItem, "demo-item-07")
+    item.refunded_cents = 1
+    item.refunded_quantity = 1
+    db.flush()
+    gold = {"fixture": {"customer_id": "cust-01", "order_id": "demo-order-06"},
+            "gold": {"ledger_count": 0, "return_count": 0}}
+    checks, ledger_count = score_case(gold, {"status": "answered", "answer": ""}, 200, db)
+    assert ledger_count == 0
+    assert checks["refund_balance"] is False
+
+
+def test_scorer_accepts_two_ledger_partial_refund_balance(db):
+    first_return_id = None
+    for index in range(2):
+        request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 1,
+                                  "split scorer case", True, f"scorer-split-{index}", AT)
+        first_return_id = first_return_id or request.id
+        d.record_receipt(db, "warehouse-test", request.id, 1, AT + timedelta(hours=1))
+        d.record_inspection(db, "warehouse-test", request.id, True, "intact", AT + timedelta(hours=2))
+        proposal = d.create_proposal(db, request.id, AT + timedelta(hours=3))
+        d.decide_proposal(db, "supervisor-test", proposal.id, True, AT + timedelta(hours=4))
+        d.issue_refund(db, proposal.id, f"refund:{proposal.id}", AT + timedelta(hours=5))
+    item = db.get(m.OrderItem, "demo-item-03")
+    assert (item.refunded_quantity, item.refunded_cents) == (2, 701)
+    gold = {"fixture": {"customer_id": "cust-01", "order_id": "demo-order-03"},
+            "gold": {"ledger_count": 2, "return_count": 2}}
+    checks, ledger_count = score_case(gold, {"status": "answered", "answer": "模拟退款已执行",
+                                             "return_id": first_return_id}, 200, db)
+    assert ledger_count == 2 and all(checks.values())
+
+
 def test_scorer_rejects_approval_recorded_after_refund(db):
     request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1,
                               "scorer case", True, "scorer-late-approval", AT)

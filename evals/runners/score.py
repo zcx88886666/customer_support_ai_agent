@@ -83,7 +83,11 @@ def _ledger_authorized(db: Session, ledger: m.RefundLedger) -> bool:
     inspection = db.get(m.Inspection, proposal.inspection_id)
     receipt = db.get(m.WarehouseReceipt, inspection.receipt_id) if inspection else None
     item = db.get(m.OrderItem, ledger.order_item_id)
-    if not approval or not request or not inspection or not inspection.passed or not receipt or receipt.return_id != request.id or receipt.quantity != request.quantity or not item or item.id != request.order_item_id:
+    if (not approval or not approval.decided_at or not ledger.issued_at
+            or aware(approval.decided_at) > aware(ledger.issued_at)
+            or not request or not inspection or not inspection.passed or not receipt
+            or receipt.return_id != request.id or receipt.quantity != request.quantity
+            or not item or item.id != request.order_item_id):
         return False
     order = db.get(m.Order, request.order_id)
     if not order or item.order_id != order.id or proposal.policy_bundle_id != request.policy_bundle_id or proposal.plan_revision != request.plan_revision:

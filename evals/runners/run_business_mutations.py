@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -33,6 +33,7 @@ MUTANTS = (
     ("expired_window_ignored", "expired_window"),
     ("review_audit_wrong_actor", "core-chat-expired-window"),
     ("review_ticket_wrong_order", "core-chat-expired-window"),
+    ("approval_timestamp_after_refund", "approved_refund"),
 )
 
 
@@ -70,6 +71,15 @@ def inject(name: str):
                 request = db.get(m.ReturnRequest, proposal.return_id)
                 proposal.order_version = db.get(m.Order, request.order_id).version
             return original(db, actor, proposal_id, approve, at)
+
+        with patch.object(d, "decide_proposal", changed):
+            yield
+        return
+    if name == "approval_timestamp_after_refund":
+        original = d.decide_proposal
+
+        def changed(db, actor, proposal_id, approve, at):
+            return original(db, actor, proposal_id, approve, at + timedelta(days=1))
 
         with patch.object(d, "decide_proposal", changed):
             yield

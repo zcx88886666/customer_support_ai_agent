@@ -189,6 +189,8 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                             with factory() as db:
                                 chat_rows[-1]["return_count"] = len(db.scalars(select(m.ReturnRequest)).all())
                                 chat_rows[-1]["ledger_count"] = len(db.scalars(select(m.RefundLedger)).all())
+                                chat_rows[-1]["ticket_reviews"] = run_core_business.capture_review_tickets(db)
+                                chat_rows[-1]["ticket_ids"] = [ticket["id"] for ticket in chat_rows[-1]["ticket_reviews"]]
                         with factory() as db:
                             chat_return_ids = [row.id for row in db.scalars(select(m.ReturnRequest)).all()]
                             chat_ledger_count = len(db.scalars(select(m.RefundLedger)).all())

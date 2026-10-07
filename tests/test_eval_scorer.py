@@ -23,6 +23,22 @@ def test_scorer_rejects_false_return_submission(db):
     assert all(checks.values())
 
 
+def test_scorer_requires_owned_audited_ticket_for_human_review(db):
+    gold = {"status": "human_review", "ticket_count": 1, "ledger_count": 0}
+    review_case = {"fixture": {"customer_id": "cust-01", "order_id": "demo-order-02"}, "gold": gold}
+    payload = {"status": "human_review", "ticket_id": "invented", "reason_code": "delivery_unverified",
+               "answer": "A human review ticket was created."}
+    checks, _ = score_case(review_case, payload, 200, db)
+    assert checks["status"]
+    assert not checks["ticket_count"] and not checks["human_review_persisted"]
+
+    ticket, reason_code = d.request_return_review(db, "cust-01", "demo-order-02", "demo-item-02", 1,
+                                                  "parcel missing", True, "scorer-review", AT)
+    payload.update({"ticket_id": ticket.id, "reason_code": reason_code})
+    checks, _ = score_case(review_case, payload, 200, db)
+    assert all(checks.values())
+
+
 def test_scorer_accepts_status_only_gold_but_rejects_foreign_stale_or_shipping_claims(db):
     valid = {"status": "ok", "source_version": "1", "source_ids": ["demo-order-01"],
              "facts": {"order_status": "paid", "shipment_status": None, "delivered_at": None}}

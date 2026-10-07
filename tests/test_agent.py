@@ -508,6 +508,41 @@ def test_return_slots_continue_across_turns_but_confirmation_is_current(db):
     assert third["plan_revision"] == 3
 
 
+def test_confirmed_ineligible_chat_opens_one_review_ticket_without_return_or_refund(db):
+    body = ChatInput(thread_id="chat-ineligible-review", message="我要退这件商品", order_id="demo-order-02",
+                     item_id="demo-item-02", quantity=1, reason="parcel never arrived", confirmed=True,
+                     idempotency_key="chat-ineligible-review")
+    first = run_chat(db, "cust-01", body)
+    assert first["status"] == "human_review"
+    assert first["reason_code"] == "delivery_unverified"
+    assert first["ticket_id"]
+    assert first.get("return_id") is None
+    assert db.get(m.Ticket, first["ticket_id"]).customer_id == "cust-01"
+    assert db.get(m.ThreadState, body.thread_id).state["ticket_id"] == first["ticket_id"]
+    db.get(m.Ticket, first["ticket_id"]).status = "resolved"
+    retry = run_chat(db, "cust-01", body)
+    assert retry["status"] == "human_review" and retry["ticket_id"] == first["ticket_id"]
+    assert db.query(m.Ticket).count() == 1
+    assert db.query(m.ReturnRequest).count() == 0
+    assert db.query(m.RefundLedger).count() == 0
+
+
+def test_confirmed_review_retry_after_clarification_reuses_resolved_ticket(db):
+    thread_id = "chat-multiturn-review"
+    first = run_chat(db, "cust-01", ChatInput(thread_id=thread_id, message="我要退这件商品", order_id="demo-order-02"))
+    assert first["status"] == "clarify"
+    body = ChatInput(thread_id=thread_id, message="我要退这件商品", item_id="demo-item-02",
+                     quantity=1, reason="parcel never arrived", confirmed=True,
+                     idempotency_key="chat-multiturn-review")
+    created = run_chat(db, "cust-01", body)
+    assert created["status"] == "human_review" and created["plan_revision"] == 2
+    db.get(m.Ticket, created["ticket_id"]).status = "resolved"
+    replay = run_chat(db, "cust-01", body)
+    assert replay["status"] == "human_review" and replay["ticket_id"] == created["ticket_id"]
+    assert db.query(m.Ticket).count() == 1
+    assert db.query(m.ReturnRequest).count() == 0
+
+
 def test_unknown_and_repeated_missing_slots_handoff(db):
     assert run_chat(db, "cust-01", ChatInput(thread_id="greeting-thread", message="你好"))["status"] == "answered"
     first = run_chat(db, "cust-01", ChatInput(thread_id="unknown-thread", message="嗯嗯"))

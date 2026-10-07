@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -285,6 +287,25 @@ def test_receipt_shortage_is_reported_for_human_review_before_receipt(session_fa
             assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == "report_receipt_dispute", m.AuditEvent.entity_id == return_id)) == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_legacy_review_fingerprint_replays_across_plan_revisions(session_factory):
+    clock = datetime.now(timezone.utc)
+    legacy_payload = json.dumps(["demo-order-02", "demo-item-02", 1, "parcel never arrived", 2],
+                                ensure_ascii=False, separators=(",", ":"))
+    legacy_hash = hashlib.sha256(legacy_payload.encode("utf-8")).hexdigest()
+    with session_factory.begin() as db:
+        db.add(m.Ticket(id="legacy-review-ticket", customer_id="cust-01", order_id="demo-order-02",
+                        topic="return eligibility review: delivery_unverified", review_key="legacy-review-key",
+                        review_payload_hash=legacy_hash))
+    with session_factory.begin() as db:
+        ticket, reason = d.request_return_review(db, "cust-01", "demo-order-02", "demo-item-02", 1,
+                                                 "parcel never arrived", True, "legacy-review-key", clock, 1)
+        assert ticket.id == "legacy-review-ticket" and reason == "delivery_unverified"
+        with pytest.raises(d.DomainError) as changed:
+            d.request_return_review(db, "cust-01", "demo-order-02", "demo-item-02", 1,
+                                    "different reason", True, "legacy-review-key", clock, 1)
+        assert changed.value.code == "idempotency_conflict"
 
 
 def test_policy_ineligible_owned_return_can_request_idempotent_human_review(session_factory):

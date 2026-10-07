@@ -143,14 +143,20 @@ def request_return_review(db: Session, customer_id: str, order_id: str, item_id:
                           reason: str, confirmed: bool, key: str, at: datetime, plan_revision: int = 1) -> tuple[m.Ticket, str]:
     if not confirmed or not reason.strip() or not key.strip() or quantity < 1:
         raise DomainError("confirmation_required", "Confirm the order, item, quantity and reason before requesting review", 422)
-    payload = json.dumps([order_id, item_id, quantity, reason.strip(), plan_revision], ensure_ascii=False, separators=(",", ":"))
+    # The revision is chat planning metadata; the idempotent business request is the confirmed set of fields.
+    fields = [order_id, item_id, quantity, reason.strip()]
+    payload = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
     fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     # A customer row serializes same-customer review keys, including requests for different orders.
     if db.get(m.Customer, customer_id, with_for_update=True) is None:
         raise DomainError("order_not_found", "Order unavailable", 404)
     previous = db.scalar(select(m.Ticket).where(m.Ticket.customer_id == customer_id, m.Ticket.review_key == key))
     if previous:
-        if previous.review_payload_hash != fingerprint or not previous.topic.startswith("return eligibility review: "):
+        legacy_fingerprints = {
+            hashlib.sha256(json.dumps([*fields, revision], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+            for revision in range(1, 5)
+        }
+        if previous.review_payload_hash not in {fingerprint, *legacy_fingerprints} or not previous.topic.startswith("return eligibility review: "):
             raise DomainError("idempotency_conflict", "Key reused with a different review request")
         return previous, previous.topic.removeprefix("return eligibility review: ")
     if db.scalar(select(m.ReturnRequest.id).where(m.ReturnRequest.customer_id == customer_id, m.ReturnRequest.idempotency_key == key)):

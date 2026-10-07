@@ -70,7 +70,8 @@ def test_refresh_only_never_loads_api_key(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--refresh-only"])
     assert run_model_review.main() == 0
     manifest = json.loads((packet / "model_review_gpt6_luna/manifest.json").read_text(encoding="utf-8"))
-    assert manifest["reviewed"] == 0 and manifest["pending"] == 162
+    packet_manifest = json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["reviewed"] == 0 and manifest["pending"] == packet_manifest["case_count"]
     assert manifest["model"] == "openai/gpt-6-luna"
     assert (packet / "model_review_gpt6_luna/human_model_disagreements.csv").exists()
 

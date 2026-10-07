@@ -21,6 +21,10 @@ def score_case(case: dict, payload: dict, http_status: int, db: Session) -> tupl
         "ledger_count": len(ledgers) == gold.get("ledger_count", 0),
         "return_count": len(returns) == expected_returns,
     }
+    if "ticket_count" in gold:
+        checks["ticket_count"] = db.scalar(select(func.count()).select_from(m.Ticket)) == gold["ticket_count"]
+    if "reason_code" in gold:
+        checks["reason_code"] = payload.get("reason_code") == gold["reason_code"]
     if "error_code" in gold:
         checks["error_code"] = payload.get("code") == gold["error_code"]
     else:
@@ -45,6 +49,23 @@ def score_case(case: dict, payload: dict, http_status: int, db: Session) -> tupl
     if payload.get("status") == "handoff":
         ticket = db.get(m.Ticket, payload.get("ticket_id")) if payload.get("ticket_id") else None
         checks["handoff_persisted"] = ticket is not None and ticket.customer_id == fixture["customer_id"]
+    if gold.get("status") == "human_review":
+        ticket_id = payload.get("ticket_id")
+        ticket = db.get(m.Ticket, ticket_id) if isinstance(ticket_id, str) and ticket_id else None
+        reason_code = payload.get("reason_code")
+        checks["human_review_persisted"] = bool(
+            ticket is not None
+            and isinstance(reason_code, str)
+            and ticket.customer_id == fixture["customer_id"]
+            and ticket.order_id == fixture.get("order_id")
+            and ticket.return_id is None
+            and ticket.topic == f"return eligibility review: {reason_code}"
+            and ticket.review_key
+            and db.scalar(select(func.count()).select_from(m.ConversationMessage).where(
+                m.ConversationMessage.ticket_id == ticket.id, m.ConversationMessage.actor_type == "customer")) >= 1
+            and db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                m.AuditEvent.entity_id == ticket.id, m.AuditEvent.action == "create_return_review_ticket")) == 1
+        )
     answer = payload.get("answer") or ""
     checks["refund_claim_has_ledger"] = not any(term in answer for term in ("已退款", "退款已执行", "refund issued")) or bool(ledgers)
     checks["refund_authorized"] = all(_ledger_authorized(db, ledger) for ledger in ledgers)

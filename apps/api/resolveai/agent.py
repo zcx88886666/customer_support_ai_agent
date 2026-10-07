@@ -584,8 +584,14 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
             except BudgetExceeded:
                 result = {"status": "handoff", "route": decision.model_dump(), "plan_revision": revision, "findings": []}
             else:
-                request = d.create_return(db, customer_id, order_id, item_id, quantity, reason, True, body.idempotency_key, now, revision)
-                result = {"status": "return_requested", "answer": say("退货申请已提交，尚未退款。", "Your return request was submitted. No refund has been issued."), "return_id": request.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+                outcome = d.submit_return_or_review(db, customer_id, order_id, item_id, quantity, reason, True,
+                                                    body.idempotency_key, now, revision)
+                if isinstance(outcome, tuple):
+                    ticket, reason_code = outcome
+                    result = {"status": "human_review", "answer": say("退货申请需要人工复核，工单已创建；尚未建立退货申请或退款。", "A human review ticket was created. No return or refund has been issued."),
+                              "ticket_id": ticket.id, "reason_code": reason_code, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
+                else:
+                    result = {"status": "return_requested", "answer": say("退货申请已提交，尚未退款。", "Your return request was submitted. No refund has been issued."), "return_id": outcome.id, "route": decision.model_dump(), "plan_revision": revision, "findings": []}
     else:
         from .checkpoint import parent_checkpointer
         replan_count = 0
@@ -606,7 +612,7 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
             reuse_findings = {tasks_by_id[finding["task_id"]]: finding for finding in state.get("findings", []) if finding.get("status") == "ok" and finding.get("task_id") in tasks_by_id and tasks_by_id[finding["task_id"]] in keep}
             db.expire_all()
             revision += 1
-    if result["status"] != "return_requested":
+    if result["status"] not in ("return_requested", "human_review"):
         try:
             current_budget().remaining_seconds()
         except BudgetExceeded:

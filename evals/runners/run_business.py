@@ -64,7 +64,7 @@ def execute(client: TestClient | None, case: dict, run_id: str, *, post_request=
         create("unconfirmed_return_refused", "synthetic return", case["case_id"], confirmed=False)
         return statuses, observations
     if case["scenario"] == "expired_window":
-        create("expired_return_refused", "synthetic return", case["case_id"])
+        create("expired_return_refused", fixture.get("reason", "synthetic return"), case["case_id"])
         return statuses, observations
 
     if case["scenario"] == "cross_customer_denial":

@@ -32,6 +32,23 @@ else:
 DATASET = ROOT / "evals/datasets/core_business_dev_v1.jsonl"
 
 
+def capture_review_tickets(db) -> list[dict]:
+    """Capture committed review evidence before terminal actions can change the database."""
+    rows = []
+    for ticket in db.scalars(select(m.Ticket)).all():
+        messages = db.scalars(select(m.ConversationMessage).where(m.ConversationMessage.ticket_id == ticket.id)).all()
+        audits = db.scalars(select(m.AuditEvent).where(m.AuditEvent.entity_id == ticket.id,
+                                                       m.AuditEvent.action == "create_return_review_ticket")).all()
+        rows.append({"id": ticket.id, "customer_id": ticket.customer_id, "order_id": ticket.order_id,
+                     "return_id": ticket.return_id, "topic": ticket.topic, "review_key": ticket.review_key,
+                     "review_payload_hash": ticket.review_payload_hash,
+                     "messages": [{"actor_type": message.actor_type, "body": message.body} for message in messages],
+                     "audits": [{"action": audit.action, "entity_type": audit.entity_type,
+                                 "entity_id": audit.entity_id, "actor_id": audit.actor_id,
+                                 "idempotency_key": audit.idempotency_key, "details": audit.details} for audit in audits]})
+    return rows
+
+
 def load_cases() -> list[dict]:
     cases = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines() if line.strip()]
     ids = [case.get("case_id") for case in cases]
@@ -62,6 +79,36 @@ def score_chat_phase(case: dict, chat_rows: list[dict], chat_return_ids: list[st
                  if chat_return_ids else payload.get("return_id") is None),
         "chat_no_early_refund": chat_ledger_count == case["gold"]["chat_ledger_count"],
     }
+    if "chat_ticket_count" in case["gold"]:
+        ticket_ids = chat_rows[-1].get("ticket_ids", [])
+        expected_count = case["gold"]["chat_ticket_count"]
+        checks["chat_committed_ticket"] = (len(ticket_ids) == expected_count
+            and (payload.get("ticket_id") in ticket_ids if expected_count else payload.get("ticket_id") is None))
+        if case["gold"].get("chat_status") == "human_review" and expected_count:
+            fixture = case.get("fixture", {})
+            ticket = next((row for row in chat_rows[-1].get("ticket_reviews", [])
+                           if row["id"] == payload.get("ticket_id")), None)
+            reason_code = case["gold"].get("chat_reason_code")
+            turn = case["dialogue_script"][-1]
+            expected_details = {"order_id": fixture.get("order_id"), "item_id": turn.get("item_id"),
+                                "quantity": turn.get("quantity"), "reason_code": reason_code}
+            customer_messages = [message["body"] for message in ticket["messages"]
+                                 if message["actor_type"] == "customer"] if ticket else []
+            matching_audits = [audit for audit in ticket["audits"]
+                               if audit == {"action": "create_return_review_ticket", "entity_type": "ticket",
+                                            "entity_id": ticket["id"], "actor_id": fixture.get("customer_id"),
+                                            "idempotency_key": case.get("case_id"), "details": expected_details}] if ticket else []
+            checks["chat_review_ticket"] = bool(
+                ticket and ticket["customer_id"] == fixture.get("customer_id")
+                and ticket["order_id"] == fixture.get("order_id") and ticket["return_id"] is None
+                and ticket["topic"] == f"return eligibility review: {reason_code}"
+                and ticket["review_key"] == case.get("case_id") and ticket.get("review_payload_hash")
+                and len(customer_messages) == 1
+                and all(value in customer_messages[0] for value in (
+                    str(turn.get("item_id")), f"quantity {turn.get('quantity')}", str(turn.get("reason"))))
+                and len(matching_audits) == 1 and len(ticket["audits"]) == 1)
+    if "chat_reason_code" in case["gold"]:
+        checks["chat_reason_code"] = payload.get("reason_code") == case["gold"]["chat_reason_code"]
     turn_gold = case["gold"].get("turn_gold", [])
     if turn_gold:
         checks["turn_count"] = len(chat_rows) == len(turn_gold)
@@ -75,6 +122,7 @@ def score_chat_phase(case: dict, chat_rows: list[dict], chat_return_ids: list[st
                 ("route", row["payload"].get("route", {}).get("route")),
                 ("return_count", row["return_count"]),
                 ("ledger_count", row["ledger_count"]),
+                ("ticket_count", len(row.get("ticket_ids", []))),
             ):
                 if field in expected:
                     checks[f"turn_{index}_{field}"] = actual == expected[field]
@@ -167,6 +215,8 @@ def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
                     with factory() as db:
                         chat_rows[-1]["return_count"] = len(db.scalars(select(m.ReturnRequest)).all())
                         chat_rows[-1]["ledger_count"] = len(db.scalars(select(m.RefundLedger)).all())
+                        chat_rows[-1]["ticket_reviews"] = capture_review_tickets(db)
+                        chat_rows[-1]["ticket_ids"] = [ticket["id"] for ticket in chat_rows[-1]["ticket_reviews"]]
                 with factory() as db:
                     chat_return_ids = [row.id for row in db.scalars(select(m.ReturnRequest)).all()]
                     chat_ledger_count = len(db.scalars(select(m.RefundLedger)).all())

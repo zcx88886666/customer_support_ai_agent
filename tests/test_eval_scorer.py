@@ -103,6 +103,37 @@ def test_scorer_accepts_one_real_approved_refund(db):
     assert ledger_count == 1 and all(checks.values())
 
 
+def test_scorer_binds_refund_audit_versions_to_approved_proposal(db):
+    request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1,
+                              "scorer case", True, "scorer-refund-version", AT)
+    d.record_receipt(db, "warehouse-test", request.id, 1, AT + timedelta(hours=1))
+    d.record_inspection(db, "warehouse-test", request.id, True, "intact", AT + timedelta(hours=2))
+    proposal = d.create_proposal(db, request.id, AT + timedelta(hours=3))
+    d.decide_proposal(db, "supervisor-test", proposal.id, True, AT + timedelta(hours=4))
+    d.issue_refund(db, proposal.id, f"refund:{proposal.id}", AT + timedelta(hours=5))
+    refund_audit = db.scalar(select(m.AuditEvent).where(
+        m.AuditEvent.action == "issue_refund", m.AuditEvent.entity_id == proposal.id))
+    payload = {"status": "answered", "answer": "模拟退款已执行", "return_id": request.id}
+    gold = case({"ledger_count": 1, "return_count": 1})
+    assert score_case(gold, payload, 200, db)[0]["refund_authorized"]
+
+    original_before = refund_audit.before_version
+    refund_audit.before_version = original_before - 1
+    db.flush()
+    assert not score_case(gold, payload, 200, db)[0]["refund_authorized"]
+    refund_audit.before_version = original_before
+
+    original_after = refund_audit.after_version
+    refund_audit.after_version = original_after + 1
+    db.flush()
+    assert not score_case(gold, payload, 200, db)[0]["refund_authorized"]
+    refund_audit.after_version = original_after
+
+    proposal.order_version -= 1
+    db.flush()
+    assert not score_case(gold, payload, 200, db)[0]["refund_authorized"]
+
+
 def test_scorer_rejects_approval_recorded_after_refund(db):
     request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1,
                               "scorer case", True, "scorer-late-approval", AT)

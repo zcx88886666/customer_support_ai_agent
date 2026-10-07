@@ -35,6 +35,7 @@ MUTANTS = (
     ("review_ticket_wrong_order", "core-chat-expired-window"),
     ("approval_timestamp_after_refund", "approved_refund"),
     ("approval_audit_wrong_actor", "approved_refund"),
+    ("refund_audit_wrong_version", "approved_refund"),
 )
 
 
@@ -91,6 +92,17 @@ def inject(name: str):
         def changed(db, actor, action, entity, entity_id, **kwargs):
             return original(db, "cust-02" if action == "approved" else actor,
                             action, entity, entity_id, **kwargs)
+
+        with patch.object(d, "audit", changed):
+            yield
+        return
+    if name == "refund_audit_wrong_version":
+        original = d.audit
+
+        def changed(db, actor, action, entity, entity_id, **kwargs):
+            if action == "issue_refund":
+                kwargs["before"] -= 1
+            return original(db, actor, action, entity, entity_id, **kwargs)
 
         with patch.object(d, "audit", changed):
             yield

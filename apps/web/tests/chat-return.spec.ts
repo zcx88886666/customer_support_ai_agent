@@ -220,3 +220,50 @@ test("an older ticket refresh cannot erase a newer return success notice", async
   await response;
   await expect(page.getByText("申请已提交：new-return，尚未退款")).toBeVisible();
 });
+
+test("multi-item orders require an explicit item choice and fresh confirmation", async ({ page }) => {
+  test.skip(process.env.CHAT_RETURN_UI_TEST !== "1", "Run with a temporary mock-mode web server on port 3001");
+  const submitted: Array<Record<string, unknown>> = [];
+  await page.route("http://localhost:8000/**", async (route) => {
+    const request = route.request();
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: cors });
+      return;
+    }
+    const path = new URL(request.url()).pathname;
+    let data: unknown = {};
+    if (path === "/orders/demo-order-01") {
+      data = { id: "demo-order-01", items: [
+        { id: "demo-item-a", quantity: 1, paid_cents: 1018 },
+        { id: "demo-item-b", quantity: 2, paid_cents: 2200 },
+      ] };
+    } else if (path === "/orders/demo-order-01/shipments") {
+      data = [];
+    } else if (path === "/chat" || path === "/returns") {
+      submitted.push({ path, ...request.postDataJSON() });
+      data = path === "/chat"
+        ? { status: "return_requested", answer: "submitted", return_id: "chosen-item-return", findings: [] }
+        : { id: "chosen-item-return", status: "return_requested" };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", headers: cors, body: JSON.stringify(data) });
+  });
+  await page.goto("http://localhost:3001/");
+  await page.getByRole("button", { name: "查看商品" }).click();
+  const agentSubmit = page.getByRole("button", { name: "通过 Agent 提交退货" });
+  await expect(agentSubmit).toBeDisabled();
+  await page.getByLabel("退货商品项").selectOption("demo-item-b");
+  await page.getByRole("checkbox", { name: /我确认订单/ }).check();
+  await page.getByLabel("退货商品项").selectOption("demo-item-a");
+  await expect(page.getByRole("checkbox", { name: /我确认订单/ })).not.toBeChecked();
+  await expect(agentSubmit).toBeDisabled();
+  await page.getByLabel("退货商品项").selectOption("demo-item-b");
+  await page.getByRole("checkbox", { name: /我确认订单/ }).check();
+  await agentSubmit.click();
+  await expect(page.getByText("申请已提交：chosen-item-return，尚未退款")).toBeVisible();
+  await page.getByRole("button", { name: "提交退货", exact: true }).click();
+  expect(submitted).toHaveLength(2);
+  expect(submitted.map((row) => row.path)).toEqual(["/chat", "/returns"]);
+  expect(submitted[0]).toMatchObject({ item_id: "demo-item-b", quantity: 1, confirmed: true });
+  expect(submitted[1]).toMatchObject({ order_item_id: "demo-item-b", quantity: 1, confirmed: true });
+  expect(submitted[1].idempotency_key).toBe(submitted[0].idempotency_key);
+});

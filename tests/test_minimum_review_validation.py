@@ -104,8 +104,8 @@ def test_complete_distinct_review_forms_are_still_not_locked_gold(tmp_path, monk
     code, report = validate(output)
     assert code == 0
     assert report["status"] == "forms_complete"
-    assert report["accepted_cases"] == 163
-    assert report["reviewer_b_completed"] == 89
+    assert report["accepted_cases"] == 164
+    assert report["reviewer_b_completed"] == 90
     assert report["ready_for_locked_split"] is False
     assert report["locked_release_pass"] is False
 

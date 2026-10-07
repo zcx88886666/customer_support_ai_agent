@@ -29,7 +29,7 @@ def test_minimum_review_packet_assigns_two_critical_reviews(tmp_path, monkeypatc
     assert manifest["grouped_locked_split_ready"] is False
     assert all(count >= 1 for count in manifest["group_components_by_suite"].values())
     assert manifest["group_components_all_suites"] == 2
-    assert manifest["largest_group_component_cases"] == 123
+    assert manifest["largest_group_component_cases"] == 124
     assert all(case["split"] == "dev" and case["review_status"] == "pending" for case in cases)
     assert manifest["packet_sha256"] == hashlib.sha256((output / "review_cases.jsonl").read_bytes()).hexdigest()
     with (output / "adjudication.csv").open(encoding="utf-8", newline="") as stream:

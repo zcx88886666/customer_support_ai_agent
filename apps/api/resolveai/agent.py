@@ -453,10 +453,14 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
                 else:
                     pieces.append(say(f"查到的订单事实：包裹 {finding.source_ids[1]} 状态为 {status or '未知'}。", f"Verified order fact: package {finding.source_ids[1]} has status {status or 'unknown'}."))
                 if len(finding.source_ids) > 1 and status != "delivered" and ("policy_qa" in state["intents"] or "return_request" in state["intents"]):
-                    pieces.append(say("包裹尚未确认签收，不能按签收次日起算的七日无理由退货流程直接提交；请联系人工核查配送异常。", "Delivery has not been confirmed. The return window measured from the day after delivery cannot be applied yet; please contact support to check the delivery issue."))
+                    pieces.append(say("包裹尚未确认签收，不能按签收次日起算的退货申请期限直接提交；请联系人工核查配送异常。", "Delivery has not been confirmed. The return window measured from the day after delivery cannot be applied yet; please contact support to check the delivery issue."))
             if role == "policy":
                 refs = "、".join(finding.source_ids)
-                pieces.append(say(f"适用条款：{refs}。签收后的申请期限由该政策包确定。", f"Relevant policy clauses: {', '.join(finding.source_ids)}. The applicable policy bundle determines the request window after delivery."))
+                days = finding.facts["window_days"]
+                pieces.append(say(
+                    f"适用条款：{refs}。该政策包的一般退货申请期限为签收次日起 {days} 个自然日；具体资格仍需核查商品和订单事实。",
+                    f"Relevant policy clauses: {', '.join(finding.source_ids)}. This policy bundle's general return request window is {days} calendar days starting the day after delivery; product and order eligibility still need verification.",
+                ))
         if len(validated) < len(state.get("tasks", [])):
             pieces.append(say("部分证据未核实，退货资格和退款需人工复核。", "Some evidence could not be verified. A human must review return eligibility and any refund."))
         if "refund_request" in state["intents"] or ("退款" in state["text"] and any(term in state["text"] for term in ("政策", "规则"))) or ("refund" in state["text"] and "policy" in state["text"]):

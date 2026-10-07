@@ -21,6 +21,24 @@ def test_composite_dispatch_and_unreceived_limit(db):
     assert {finding["source_version"] for finding in result["findings"]} == {"1", "policy-demo-v1"}
 
 
+def test_undelivered_answer_uses_current_policy_window_without_seven_day_claim(db):
+    bundle = create_draft(db, "support-1", "policy-eight-day-composite", 8,
+                          [{"id": "policy-eight-day-composite:window", "title": "退货政策",
+                            "body": "合格商品签收后可以申请退货。"}], datetime.now(timezone.utc))
+    index_and_verify(db, "supervisor-1", bundle.id)
+    order = db.get(m.Order, "demo-order-02")
+    order.policy_bundle_id = bundle.id
+    order.version += 1
+    db.flush()
+    result = run_chat(db, "cust-01", ChatInput(thread_id="eight-day-undelivered", message="包裹没到能退吗",
+                                               order_id=order.id, agent_mode="collab"))
+    assert result["status"] == "answered"
+    assert "签收次日起 8 个自然日" in result["answer"]
+    assert "七日" not in result["answer"]
+    assert "尚未确认签收" in result["answer"]
+    assert db.query(m.ReturnRequest).count() == 0
+
+
 def test_parallel_specialists_serialize_session_reads_but_overlap_model_review(db, monkeypatch):
     import threading
     import time
@@ -200,6 +218,7 @@ def test_parent_uses_confirmed_language_without_changing_business_facts(db):
     english = run_chat(db, "cust-01", question)
     assert english["status"] == "answered"
     assert "Delivery has not been confirmed" in english["answer"]
+    assert "7 calendar days starting the day after delivery" in english["answer"]
     assert {finding["source_version"] for finding in english["findings"]} == {"1", "policy-demo-v1"}
     assert "refund" not in english["answer"].lower()
     assert db.get(m.ThreadState, question.thread_id).state.get("language") is None
@@ -339,6 +358,11 @@ def test_model_cannot_silently_drop_explicit_high_risk_action(monkeypatch):
 def test_single_domain_and_thread_isolation(db):
     result = run_chat(db, "cust-01", ChatInput(thread_id="thread-2", message="七天无理由退货政策是什么", agent_mode="collab"))
     assert len(result["findings"]) == 1
+    assert result["findings"][0]["facts"]["window_days"] == 7
+    assert "签收次日起 7 个自然日" in result["answer"]
+    assert "仍需核查" in result["answer"]
+    assert db.query(m.ReturnRequest).count() == 0
+    assert db.query(m.RefundLedger).count() == 0
     with pytest.raises(DomainError):
         run_chat(db, "cust-02", ChatInput(thread_id="thread-2", message="政策是什么"))
 
@@ -631,6 +655,8 @@ def test_active_policy_change_replans_with_new_bundle(db, monkeypatch):
     assert result["status"] == "answered"
     assert result["replan_count"] == 1 and result["plan_revision"] == 2
     assert result["findings"][0]["source_version"] == "policy-replan-v2"
+    assert result["findings"][0]["facts"]["window_days"] == 8
+    assert "签收次日起 8 个自然日" in result["answer"]
 
 
 def test_repeated_order_changes_handoff_after_two_replans(db, monkeypatch):

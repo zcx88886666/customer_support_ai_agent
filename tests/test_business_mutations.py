@@ -3,5 +3,9 @@ from evals.runners.run_business_mutations import run_mutants
 
 def test_targeted_business_mutations_are_detected():
     result = run_mutants()
-    assert result["counts"] == {"killed": 9, "survived": 0, "invalid": 0}
+    assert result["counts"] == {"killed": 11, "survived": 0, "invalid": 0}
     assert result["mutation_score"] == 1.0
+    review_cases = {row["mutation"]: row for row in result["results"]
+                    if row["mutation"].startswith("review_")}
+    assert set(review_cases) == {"review_audit_wrong_actor", "review_ticket_wrong_order"}
+    assert all("chat_review_ticket" in row["failed_checks"] for row in review_cases.values())

@@ -15,9 +15,10 @@ from resolveai.config import settings
 from resolveai.prompts import ROOT
 
 if __package__:
-    from . import run_business
+    from . import run_business, run_core_business
 else:
     import run_business
+    import run_core_business
 
 
 MUTANTS = (
@@ -30,6 +31,8 @@ MUTANTS = (
     ("failed_inspection_passed", "inspection_exception"),
     ("confirmation_ignored", "unconfirmed_return"),
     ("expired_window_ignored", "expired_window"),
+    ("review_audit_wrong_actor", "core-chat-expired-window"),
+    ("review_ticket_wrong_order", "core-chat-expired-window"),
 )
 
 
@@ -101,6 +104,27 @@ def inject(name: str):
         with patch.object(d, "eligibility", changed):
             yield
         return
+    if name == "review_audit_wrong_actor":
+        original = d.audit
+
+        def changed(db, actor, action, entity, entity_id, **kwargs):
+            return original(db, "cust-02" if action == "create_return_review_ticket" else actor,
+                            action, entity, entity_id, **kwargs)
+
+        with patch.object(d, "audit", changed):
+            yield
+        return
+    if name == "review_ticket_wrong_order":
+        original = d.request_return_review
+
+        def changed(*args, **kwargs):
+            ticket, reason = original(*args, **kwargs)
+            ticket.order_id = "demo-order-02"
+            return ticket, reason
+
+        with patch.object(d, "request_return_review", changed):
+            yield
+        return
     raise ValueError("Unknown mutation")
 
 
@@ -108,22 +132,25 @@ def run_mutants() -> dict:
     if settings.auth_mode != "mock":
         raise RuntimeError("Mutation runner requires AUTH_MODE=mock")
     cases = {case["scenario"]: case for case in run_business.load_cases()}
+    core_cases = {case["case_id"]: case for case in run_core_business.load_cases()}
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-business-mutations-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
     folder.mkdir(parents=True, exist_ok=False)
     results = []
     for name, scenario in MUTANTS:
+        case = core_cases[scenario] if scenario in core_cases else cases[scenario]
         try:
             with inject(name):
-                result = run_business.run_case(cases[scenario], run_id)
+                result = (run_core_business.run_case(case, run_id, datetime.now(timezone.utc))
+                          if scenario in core_cases else run_business.run_case(case, run_id))
             outcome = "survived" if result["status"] == "pass" else "killed"
             results.append({"mutation": name, "case_id": result["case_id"], "outcome": outcome, "case_status": result["status"], "failed_checks": [key for key, passed in result["checks"].items() if not passed]})
         except Exception as exc:
-            results.append({"mutation": name, "case_id": cases[scenario]["case_id"], "outcome": "invalid", "error": type(exc).__name__ + ": " + str(exc)[:160]})
+            results.append({"mutation": name, "case_id": case["case_id"], "outcome": "invalid", "error": type(exc).__name__ + ": " + str(exc)[:160]})
     counts = {outcome: sum(row["outcome"] == outcome for row in results) for outcome in ("killed", "survived", "invalid")}
     valid = counts["killed"] + counts["survived"]
-    summary = {"run_id": run_id, "dataset": "business_workflows_v2", "mutants": len(results), "counts": counts, "mutation_score": round(counts["killed"] / valid, 4) if valid else None, "gate_pass": counts["killed"] == len(results), "report": str(folder)}
-    (folder / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(run_business.DATASET.read_bytes()).hexdigest(), "mutation_set": [row[0] for row in MUTANTS], "auth_mode": "mock", "database": "isolated-sqlite-per-mutation"}, indent=2) + "\n", encoding="utf-8")
+    summary = {"run_id": run_id, "dataset": "business_workflows_v2+core_business_dev_v1", "mutants": len(results), "counts": counts, "mutation_score": round(counts["killed"] / valid, 4) if valid else None, "gate_pass": counts["killed"] == len(results), "report": str(folder), "results": results}
+    (folder / "manifest.json").write_text(json.dumps({"run_id": run_id, "dataset_sha256": hashlib.sha256(run_business.DATASET.read_bytes()).hexdigest(), "core_dataset_sha256": hashlib.sha256(run_core_business.DATASET.read_bytes()).hexdigest(), "mutation_set": [row[0] for row in MUTANTS], "auth_mode": "mock", "database": "isolated-sqlite-per-mutation"}, indent=2) + "\n", encoding="utf-8")
     (folder / "mutations.jsonl").write_text("".join(json.dumps(row) + "\n" for row in results), encoding="utf-8")
     (folder / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return summary

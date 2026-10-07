@@ -42,6 +42,7 @@ export default function Home() {
   const [keycloak, setKeycloak] = useState<Keycloak | null>(null);
   const threadId = useRef("");
   const submission = useRef({ signature: "", key: "" });
+  const returnFormVersion = useRef(0);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [ticketStatus, setTicketStatus] = useState<TicketStatus>("all");
   const ticketStatusRef = useRef<TicketStatus>("all");
@@ -114,14 +115,24 @@ export default function Home() {
     if (!(error instanceof StaleRequest)) setNotice(String(error));
   }
 
+  function invalidateReturnForm() {
+    returnFormVersion.current += 1;
+    setReturnId("");
+    setNotice("");
+  }
+
   async function loadOrders() {
     try { setOrders(await call("/orders")); setNotice(""); } catch (error) { showError(error); }
   }
   async function loadOrder(id: string) {
+    invalidateReturnForm();
+    const requestedFormVersion = returnFormVersion.current;
+    setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setConfirmed(false);
     try {
       const [value, packages] = await Promise.all([call(`/orders/${encodeURIComponent(id)}`), call(`/orders/${encodeURIComponent(id)}/shipments`)]);
+      if (returnFormVersion.current !== requestedFormVersion) return;
       setItems(value.items); setShipments(packages); setShipmentId(packages.length === 1 ? packages[0].id : ""); setPendingShipmentOptions([]); setOrderId(id); setNotice("");
-    } catch (error) { showError(error); }
+    } catch (error) { if (returnFormVersion.current === requestedFormVersion) showError(error); }
   }
   async function sendChat() {
     try {
@@ -131,35 +142,64 @@ export default function Home() {
       setNotice(value.ticket_id ? `已转人工，工单 ${value.ticket_id}。请在“我的工单”查看进度。` : `${value.status} · ${value.findings?.length || 0} 条专职证据`);
     } catch (error) { showError(error); }
   }
+  async function submitReturnThroughAgent() {
+    if (!confirmed || !items[0]) return;
+    const requestedGeneration = identityGeneration.current;
+    const requestedFormVersion = returnFormVersion.current;
+    try {
+      const signature = JSON.stringify([orderId, items[0].id, quantity, reason]);
+      if (submission.current.signature !== signature) submission.current = { signature, key: crypto.randomUUID() };
+      const value = await call("/chat", { method: "POST", body: JSON.stringify({
+        thread_id: threadId.current, message: "我要退这件商品", order_id: orderId, item_id: items[0].id,
+        quantity, reason, confirmed: true, idempotency_key: submission.current.key, agent_mode: agentMode,
+      }) });
+      if (identityGeneration.current !== requestedGeneration || returnFormVersion.current !== requestedFormVersion) return;
+      setAnswer(value.answer || "");
+      setPendingShipmentOptions([]);
+      if (value.status === "human_review" && value.ticket_id) {
+        setReturnId("");
+        await loadTickets(null, ticketStatusRef.current, false);
+        if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) setNotice(`已提交人工复核工单 ${value.ticket_id}；尚未建立退货申请或退款。`);
+      } else if (value.status === "return_requested" && value.return_id) {
+        setReturnId(value.return_id);
+        setNotice(`申请已提交：${value.return_id}，尚未退款`);
+      } else {
+        if (value.ticket_id) await loadTickets(null, ticketStatusRef.current, false);
+        if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) setNotice(value.ticket_id ? `已转人工，工单 ${value.ticket_id}。请在“我的工单”查看进度。` : value.answer || value.status);
+      }
+    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showError(error); }
+  }
   async function submitReturn() {
     if (!confirmed || !items[0]) return;
     const requestedGeneration = identityGeneration.current;
+    const requestedFormVersion = returnFormVersion.current;
     try {
       const signature = JSON.stringify([orderId, items[0].id, quantity, reason]);
       if (submission.current.signature !== signature) submission.current = { signature, key: crypto.randomUUID() };
       const value = await call("/returns", { method: "POST", body: JSON.stringify({ order_id: orderId, order_item_id: items[0].id, quantity, reason, confirmed, idempotency_key: submission.current.key }) });
-      if (identityGeneration.current !== requestedGeneration) return;
+      if (identityGeneration.current !== requestedGeneration || returnFormVersion.current !== requestedFormVersion) return;
       if (value.ticket_id) {
         setReturnId("");
-        await loadTickets();
-        if (identityGeneration.current === requestedGeneration) setNotice(`已提交人工复核工单 ${value.ticket_id}；尚未建立退货申请或退款。`);
+        await loadTickets(null, ticketStatusRef.current, false);
+        if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) setNotice(`已提交人工复核工单 ${value.ticket_id}；尚未建立退货申请或退款。`);
       } else {
         setReturnId(value.id); setNotice(`申请已提交：${value.id}，尚未退款`);
       }
-    } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); }
+    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showError(error); }
   }
   async function requestReturnReview() {
     if (!confirmed || !items[0]) return;
     const requestedGeneration = identityGeneration.current;
+    const requestedFormVersion = returnFormVersion.current;
     try {
       const signature = JSON.stringify([orderId, items[0].id, quantity, reason]);
       if (submission.current.signature !== signature) submission.current = { signature, key: crypto.randomUUID() };
       const value = await call("/returns/review", { method: "POST", body: JSON.stringify({ order_id: orderId, order_item_id: items[0].id, quantity, reason, confirmed, idempotency_key: submission.current.key }) });
-      if (identityGeneration.current !== requestedGeneration) return;
+      if (identityGeneration.current !== requestedGeneration || returnFormVersion.current !== requestedFormVersion) return;
       setReturnId("");
-      await loadTickets();
-      if (identityGeneration.current === requestedGeneration) setNotice(`已提交人工复核工单 ${value.ticket_id}；尚未建立退货申请或退款。`);
-    } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); }
+      await loadTickets(null, ticketStatusRef.current, false);
+      if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) setNotice(`已提交人工复核工单 ${value.ticket_id}；尚未建立退货申请或退款。`);
+    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showError(error); }
   }
   async function warehouse(path: string, body: object) {
     try {
@@ -191,7 +231,7 @@ export default function Home() {
     } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); }
   }
 
-  async function loadTickets(cursor: Ticket | null = null, status: TicketStatus = ticketStatusRef.current) {
+  async function loadTickets(cursor: Ticket | null = null, status: TicketStatus = ticketStatusRef.current, clearNotice = true) {
     const version = ++ticketListVersion.current;
     try {
       const params = new URLSearchParams({ status });
@@ -204,8 +244,8 @@ export default function Home() {
       setTickets((current) => cursor ? [...current, ...values.filter((ticket) => !current.some((seen) => seen.id === ticket.id))] : values);
       setTicketsHasMore(values.length === 100);
       if (!cursor) setTicketDetail((current) => current && values.some((ticket) => ticket.id === current.id) ? current : null);
-      setNotice("");
-    } catch (error) { if (version === ticketListVersion.current) showError(error); }
+      if (clearNotice) setNotice("");
+    } catch (error) { if (clearNotice && version === ticketListVersion.current) showError(error); }
   }
   async function openTicket(id: string) {
     try { setTicketDetail(await call(`/tickets/${encodeURIComponent(id)}`)); setTicketText(""); setNotice(""); } catch (error) { showError(error); }
@@ -253,10 +293,10 @@ export default function Home() {
         {ticketDetail && <div><h3>工单 {ticketDetail.id} · {ticketDetail.status}</h3>{ticketDetail.return_id && <p>关联退货：{ticketDetail.return_id}</p>}<ul>{ticketDetail.messages.map((item) => <li key={item.id}>{item.actor_type} · {item.body}</li>)}</ul>{ticketDetail.status === "open" && role !== "supervisor" && <><label>工单消息<textarea value={ticketText} onChange={(e) => setTicketText(e.target.value)} /></label><button disabled={!ticketText.trim()} onClick={() => ticketAction("messages")}>发送工单消息</button>{role === "support" && <button disabled={!ticketText.trim()} onClick={() => ticketAction("resolve")}>回复并结案</button>}</>}</div>}
       </section>}
       {role === "customer" && <>
-        <section className="card"><h2>我的订单</h2><button onClick={loadOrders}>刷新订单</button><ul>{orders.map((order) => <li key={order.id}><button className="secondary" onClick={() => loadOrder(order.id)}>{order.id}</button> {order.status}</li>)}</ul><label>订单编号<input value={orderId} onChange={(e) => { setOrderId(e.target.value); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); }} /></label><button onClick={() => loadOrder(orderId)}>查看商品</button><pre>{JSON.stringify(items, null, 2)}</pre></section>
+        <section className="card"><h2>我的订单</h2><button onClick={loadOrders}>刷新订单</button><ul>{orders.map((order) => <li key={order.id}><button className="secondary" onClick={() => loadOrder(order.id)}>{order.id}</button> {order.status}</li>)}</ul><label>订单编号<input value={orderId} onChange={(e) => { invalidateReturnForm(); setOrderId(e.target.value); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setConfirmed(false); }} /></label><button onClick={() => loadOrder(orderId)}>查看商品</button><pre>{JSON.stringify(items, null, 2)}</pre></section>
         <section className="card"><h2>咨询</h2><label>问题<textarea value={message} onChange={(e) => setMessage(e.target.value)} /></label>{(shipments.length > 1 || pendingShipmentOptions.length > 1) && <label>查询包裹<select value={shipmentId} onChange={(e) => setShipmentId(e.target.value)}><option value="">请选择包裹</option>{(shipments.length > 1 ? shipments.map((row) => row.id) : pendingShipmentOptions).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>}<label>Agent 模式<select value={agentMode} onChange={(e) => setAgentMode(e.target.value as "single" | "collab")}><option value="single">单图基线</option><option value="collab">双专职协作</option></select></label><button onClick={sendChat}>发送</button><pre>{answer}</pre></section>
         <section className="card"><h2>答复语言偏好</h2><p>仅在明确同意后保存。语言偏好只改变答复文字，不改变订单、退货或退款规则。</p><button onClick={async () => { const requestedGeneration = identityGeneration.current; try { await loadProfile(); if (identityGeneration.current === requestedGeneration) setNotice(""); } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); } }}>读取偏好</button>{profile && <><p>记忆同意：{profile.consent ? "已同意" : "未同意"} · 已保存语言：{profile.preferences.language || "无"}</p>{!profile.consent ? <button onClick={() => updateProfile("/profile/memory-consent", "POST", { consent: true })}>同意保存偏好</button> : <><label>答复语言<select value={languageChoice} onChange={(e) => setLanguageChoice(e.target.value)}><option value="中文">中文</option><option value="English">English</option></select></label><button onClick={() => updateProfile("/profile/preferences/language", "PUT", { value: languageChoice, confirmed: true })}>确认并保存语言</button><button className="secondary" onClick={() => updateProfile("/profile/preferences/language", "DELETE")}>删除语言偏好</button><button className="secondary" onClick={() => updateProfile("/profile/memory-consent", "POST", { consent: false })}>撤回记忆同意并清除偏好</button></>}</>}</section>
-        <section className="card"><h2>申请退货</h2><p>订单 {orderId} · 商品 {items[0]?.id || "请先查看商品"}</p><label>数量<input type="number" min="1" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label>原因<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><label><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />我确认订单、商品、数量、原因并提交申请</label><button disabled={!confirmed || !items[0]} onClick={submitReturn}>提交退货</button><button className="secondary" disabled={!confirmed || !items[0]} onClick={requestReturnReview}>自动退货不适用时申请人工复核</button><p>{returnId}</p></section>
+        <section className="card"><h2>申请退货</h2><p>订单 {orderId} · 商品 {items[0]?.id || "请先查看商品"}</p><label>数量<input type="number" min="1" value={quantity} onChange={(e) => { invalidateReturnForm(); setQuantity(Number(e.target.value)); setConfirmed(false); }} /></label><label>原因<input value={reason} onChange={(e) => { invalidateReturnForm(); setReason(e.target.value); setConfirmed(false); }} /></label><label><input type="checkbox" checked={confirmed} onChange={(e) => { invalidateReturnForm(); setConfirmed(e.target.checked); }} />我确认订单、商品、数量、原因并提交申请</label><button disabled={!confirmed || !items[0]} onClick={submitReturn}>提交退货</button><button className="secondary" disabled={!confirmed || !items[0]} onClick={submitReturnThroughAgent}>通过 Agent 提交退货</button><button className="secondary" disabled={!confirmed || !items[0]} onClick={requestReturnReview}>自动退货不适用时申请人工复核</button><p>{returnId}</p></section>
       </>}
       {role === "warehouse" && <section className="card"><h2>仓库</h2><label>退货申请 ID<input value={returnId} onChange={(e) => setReturnId(e.target.value)} /></label><label>实收数量<input type="number" min="0" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label>数量异常说明<input value={warehouseNote} onChange={(e) => setWarehouseNote(e.target.value)} /></label><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/receipt`, { quantity, note: warehouseNote.trim() })}>记录入库</button><button className="secondary" disabled={!returnId.trim() || !warehouseNote.trim() || !Number.isInteger(quantity) || quantity < 0} onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/receipt-dispute`, { observed_quantity: quantity, note: warehouseNote.trim() })}>上报数量异常并转人工</button><button onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: true, note: "intact" })}>质检通过</button><button className="secondary" onClick={() => warehouse(`/warehouse/returns/${encodeURIComponent(returnId)}/inspection`, { passed: false, note: "exception" })}>质检异常</button><button onClick={() => warehouse(`/returns/${encodeURIComponent(returnId)}/proposal`, {})}>生成规则提案</button></section>}
       {role === "supervisor" && <section className="card"><h2>主管审批</h2><button onClick={loadProposals}>刷新待审提案与期限</button><ul>{proposals.map((proposal) => <li key={proposal.id}>{proposal.id} · ¥{(proposal.amount_cents / 100).toFixed(2)}<br /><button onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: true })}>批准</button><button className="secondary" onClick={() => warehouse(`/supervisor/proposals/${proposal.id}/decision`, { approve: false })}>拒绝</button></li>)}</ul><h3>退款处理期限</h3><ul>{deadlineAlerts.map((alert) => <li key={`${alert.return_id}:${alert.kind}`}>{alert.return_id} · {alert.kind === "overdue" ? "已逾期" : "24 小时内到期"} · {new Date(alert.deadline_at).toLocaleString()}</li>)}</ul><p>批准后由受控退款 Worker 执行单笔模拟退款。</p></section>}

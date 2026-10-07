@@ -70,34 +70,36 @@ def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
         writer.writerows(rows)
 
 
+def group_component_sizes(cases: list[dict]) -> list[int]:
+    """Find leakage-connected groups, including links across suites."""
+    parent = list(range(len(cases)))
+    first: dict[tuple[str, str], int] = {}
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for index, case in enumerate(cases):
+        for key in ("customer", "order", "source", "template", "family", "bundle"):
+            value = case["group_keys"].get(key)
+            if value in (None, "", "none"):
+                continue
+            pair = (key, str(value))
+            if pair in first:
+                parent[root(index)] = root(first[pair])
+            else:
+                first[pair] = index
+    return sorted(Counter(root(index) for index in range(len(cases))).values(), reverse=True)
+
+
 def group_component_counts(cases: list[dict]) -> dict[str, int]:
-    """Count connected components under v6's conservative grouping keys."""
+    """Count connected components within each suite for packet diagnostics."""
     by_suite: dict[str, list[dict]] = {}
     for case in cases:
         by_suite.setdefault(case["suite"], []).append(case)
-    counts = {}
-    for suite, rows in by_suite.items():
-        parent = list(range(len(rows)))
-        first: dict[tuple[str, str], int] = {}
-
-        def root(index):
-            while parent[index] != index:
-                parent[index] = parent[parent[index]]
-                index = parent[index]
-            return index
-
-        for index, case in enumerate(rows):
-            for key in ("customer", "order", "source", "template", "bundle"):
-                value = case["group_keys"].get(key)
-                if value in (None, "", "none"):
-                    continue
-                pair = (key, str(value))
-                if pair in first:
-                    parent[root(index)] = root(first[pair])
-                else:
-                    first[pair] = index
-        counts[suite] = len({root(index) for index in range(len(rows))})
-    return counts
+    return {suite: len(group_component_sizes(rows)) for suite, rows in by_suite.items()}
 
 
 def main() -> None:
@@ -130,6 +132,7 @@ def main() -> None:
               ["case_id", "suite", "final_decision", "final_gold_json",
                "adjudicator_id", "notes", "reviewed_at_utc"])
     components = group_component_counts(cases)
+    all_component_sizes = group_component_sizes(cases)
     manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "status": "pending_independent_review",
                 "packet_sha256": hashlib.sha256(packet_path.read_bytes()).hexdigest(),
                 "source_datasets": source_meta, "case_count": len(cases), "suite_counts": dict(counts),
@@ -138,6 +141,8 @@ def main() -> None:
                 "reviewer_b_assignments": len(second_review), "normal_double_review_count": len(double_normal),
                 "missing_group_keys": sum(not case["group_keys"] for case in cases),
                 "group_components_by_suite": components,
+                "group_components_all_suites": len(all_component_sizes),
+                "largest_group_component_cases": max(all_component_sizes),
                 "grouped_locked_split_ready": False,
                 "locked_cases": 0}
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -151,10 +156,10 @@ def main() -> None:
         "Set `reviewer_id` to your human identity and `reviewed_at_utc` to an ISO-8601 UTC timestamp; explain each decision in `notes`. For `revise`, put a complete corrected gold object in `revised_gold_json` when possible. Record risk-tier concerns in notes. "
         "Record the adjudicated result in `adjudication.csv`; for a final `revise`, place the complete corrected gold object in `final_gold_json`. Do not directly change source labels during review. "
         "Only after disagreements are resolved should a separate grouped dev/locked split be created and the locked suite run against frozen code, model, Prompt, policy, fixture, and scorer hashes. "
-        "Cases sharing an order, customer, source conversation, or template must remain in one partition. The manifest reports connected group counts; these development fixtures cannot be relabeled into an independent locked partition.\n",
+        "Cases sharing an order, customer, source conversation, or template family must remain in one partition. The conservative diagnostic also links the recorded policy bundle. The manifest reports connected group counts within and across suites; these development fixtures cannot be relabeled into an independent locked partition.\n",
         encoding="utf-8",
     )
-    print(json.dumps({"output": str(output), **{key: manifest[key] for key in ("case_count", "critical_count", "normal_count", "reviewer_b_assignments", "missing_group_keys", "group_components_by_suite", "locked_cases")}}, ensure_ascii=False))
+    print(json.dumps({"output": str(output), **{key: manifest[key] for key in ("case_count", "critical_count", "normal_count", "reviewer_b_assignments", "missing_group_keys", "group_components_by_suite", "group_components_all_suites", "largest_group_component_cases", "locked_cases")}}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

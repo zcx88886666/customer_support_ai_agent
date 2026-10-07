@@ -10,7 +10,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scripts.prepare_minimum_review import load_packet_cases
+from scripts.prepare_minimum_review import group_component_counts, group_component_sizes, load_packet_cases
 
 
 DECISIONS = {"accept", "revise", "reject", "needs_context"}
@@ -209,6 +209,10 @@ def validate_packet(packet: Path) -> dict:
         return {"status": "invalid", "errors": ["packet_unreadable"], "locked_release_pass": False}
     if not isinstance(manifest, dict):
         return {"status": "invalid", "errors": ["manifest_shape_invalid"], "locked_release_pass": False}
+    if (manifest.get("grouped_locked_split_ready") is not False
+            or manifest.get("locked_cases") != 0
+            or manifest.get("status") != "pending_independent_review"):
+        errors.add("premature_locked_manifest")
     expected_hash = manifest.get("packet_sha256")
     if expected_hash is not None and hashlib.sha256(packet_bytes).hexdigest() != expected_hash:
         errors.add("packet_hash_mismatch")
@@ -234,6 +238,15 @@ def validate_packet(packet: Path) -> dict:
         errors.add("case_shape_invalid")
     elif cases != expected_cases:
         errors.add("packet_source_mismatch")
+    if all(isinstance(case, dict) and isinstance(case.get("group_keys"), dict) for case in cases):
+        group_sizes = group_component_sizes(cases)
+        group_diagnostics = {
+            "group_components_by_suite": group_component_counts(cases),
+            "group_components_all_suites": len(group_sizes),
+            "largest_group_component_cases": max(group_sizes, default=0),
+        }
+        if any(key in manifest and manifest[key] != value for key, value in group_diagnostics.items()):
+            errors.add("group_manifest_mismatch")
     if errors:
         return {"status": "invalid", "errors": sorted(errors), "locked_release_pass": False}
     ids = [case.get("case_id") for case in cases]

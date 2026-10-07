@@ -157,6 +157,29 @@ def test_removed_source_manifest_entry_is_invalid(tmp_path, monkeypatch):
     assert "source_manifest_mismatch" in report["errors"]
 
 
+def test_tampered_group_diagnostic_is_invalid(tmp_path, monkeypatch):
+    output = packet(tmp_path, monkeypatch)
+    path = output / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["group_components_all_suites"] = 1
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    code, report = validate(output)
+    assert code == 1
+    assert "group_manifest_mismatch" in report["errors"]
+
+
+def test_packet_manifest_cannot_claim_locked_cases(tmp_path, monkeypatch):
+    output = packet(tmp_path, monkeypatch)
+    path = output / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["grouped_locked_split_ready"] = True
+    manifest["locked_cases"] = manifest["case_count"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    code, report = validate(output)
+    assert code == 1
+    assert "premature_locked_manifest" in report["errors"]
+
+
 def test_revise_requires_complete_json_gold(tmp_path, monkeypatch):
     output = packet(tmp_path, monkeypatch)
     accept_all(output)

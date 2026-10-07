@@ -1,6 +1,9 @@
 """Load success requires committed money and approval facts, not HTTP claims."""
 
+import json
 from datetime import datetime, timezone
+
+import pytest
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -126,3 +129,46 @@ def test_k6_cleanup_timeout_still_cleans_postgres_and_reports(monkeypatch, tmp_p
     assert runner.main() == 1
     assert cleaned == [False]
     assert len(list(tmp_path.glob("*/summary.json"))) == 1
+    manifest = json.loads(next(tmp_path.glob("*/manifest.json")).read_text())
+    assert manifest["load_profile"] == {"vus": 10, "duration_seconds": 60, "orders": 1000}
+
+
+def test_mixed_write_load_profile_accepts_bounded_environment(monkeypatch):
+    from evals.runners.run_mixed_write_load import load_profile
+
+    monkeypatch.setenv("LOAD_VUS", "20")
+    monkeypatch.setenv("LOAD_DURATION_SECONDS", "30")
+    monkeypatch.setenv("LOAD_ORDERS", "2000")
+    assert load_profile() == (20, 30, 2000)
+
+
+def test_mixed_write_load_profile_rejects_invalid_environment(monkeypatch):
+    from evals.runners.run_mixed_write_load import load_profile
+
+    for name, value in (("LOAD_VUS", "0"), ("LOAD_VUS", "101"),
+                        ("LOAD_DURATION_SECONDS", "301"), ("LOAD_ORDERS", "not-a-number")):
+        monkeypatch.setenv(name, value)
+        with pytest.raises(ValueError, match=name):
+            load_profile()
+        monkeypatch.delenv(name)
+
+
+def test_invalid_load_profile_fails_before_allocating_fixture(monkeypatch, tmp_path):
+    from evals.runners import run_mixed_write_load as runner
+
+    monkeypatch.setenv("LOAD_VUS", "101")
+    monkeypatch.setattr(runner, "REPORT_ROOT", tmp_path)
+    with pytest.raises(ValueError, match="LOAD_VUS"):
+        runner.main()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_orders_below_virtual_users_fail_before_allocating_fixture(monkeypatch, tmp_path):
+    from evals.runners import run_mixed_write_load as runner
+
+    monkeypatch.setenv("LOAD_VUS", "100")
+    monkeypatch.setenv("LOAD_ORDERS", "1")
+    monkeypatch.setattr(runner, "REPORT_ROOT", tmp_path)
+    with pytest.raises(ValueError, match="LOAD_ORDERS"):
+        runner.main()
+    assert list(tmp_path.iterdir()) == []

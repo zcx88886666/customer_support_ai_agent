@@ -133,7 +133,24 @@ def wait_api(url: str, process: subprocess.Popen) -> None:
     raise RuntimeError("Temporary isolated API did not become healthy")
 
 
+def load_profile() -> tuple[int, int, int]:
+    """Read a bounded synthetic load profile before creating owned resources."""
+    def bounded(name: str, default: int, maximum: int) -> int:
+        raw = os.getenv(name, str(default)).strip()
+        if not raw.isdecimal() or not 1 <= int(raw) <= maximum:
+            raise ValueError(f"{name} must be an integer from 1 to {maximum}")
+        return int(raw)
+
+    vus = bounded("LOAD_VUS", 10, 100)
+    duration = bounded("LOAD_DURATION_SECONDS", 60, 300)
+    orders = bounded("LOAD_ORDERS", 1000, 10000)
+    if orders < vus:
+        raise ValueError("LOAD_ORDERS must be at least LOAD_VUS")
+    return vus, duration, orders
+
+
 def main() -> int:
+    vus, duration, orders = load_profile()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-mixed-write-" + uuid4().hex[:6]
     report_dir = REPORT_ROOT / run_id
     report_dir.mkdir(parents=True)
@@ -141,7 +158,6 @@ def main() -> int:
     server_dir.mkdir()
     server = DisposablePostgres(run_id, server_dir)
     database = "ra_mixed_" + uuid4().hex[:16]
-    vus, duration, orders = 10, 60, 1000
     api = worker = None
     checks, counts, error_type = {}, {}, None
     load_summary = {}
@@ -290,6 +306,7 @@ def main() -> int:
             save_failure(server_dir, exc)
             cleanup = {"container": server.name, "volume": server.volume, "removed": False}
     manifest = {"run_id": run_id, "suite": "mixed-write-load-v1", "split": "dev", "synthetic": True,
+                "load_profile": {"vus": vus, "duration_seconds": duration, "orders": orders},
                 "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "script_hashes": {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in (
                     ROOT / "evals/load/mixed_write.js", Path(__file__))}, "database": database,

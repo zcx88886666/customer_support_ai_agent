@@ -326,3 +326,51 @@ def test_policy_ineligible_owned_return_can_request_idempotent_human_review(sess
             assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == "create_return_review_ticket", m.AuditEvent.entity_id == ticket_id)) == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_direct_mismatched_receipt_routes_to_one_terminal_human_ticket(session_factory):
+    clock = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        shortage = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1, "not needed", True, "auto-shortage", clock)
+        overage = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 2, "not needed", True, "auto-overage", clock)
+        shortage_id, overage_id = shortage.id, overage.id
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            shortage_path = f"/warehouse/returns/{shortage_id}/receipt"
+            body = {"quantity": 0, "note": "empty carton"}
+            assert client.post(shortage_path, json=body, headers=CUSTOMER).status_code == 403
+            assert client.post(shortage_path, json={"quantity": -1}, headers=WAREHOUSE).status_code == 422
+            first = client.post(shortage_path, json=body, headers=WAREHOUSE)
+            assert first.status_code == 202 and first.json()["status"] == "human_review"
+            ticket_id = first.json()["ticket_id"]
+            assert client.get(f"/returns/{shortage_id}", headers=CUSTOMER).json()["status"] == "exception"
+            assert client.post(shortage_path, json=body, headers=WAREHOUSE).json()["ticket_id"] == ticket_id
+            assert client.post(shortage_path, json={"quantity": 0, "note": "different"}, headers=WAREHOUSE).status_code == 409
+            assert client.post(shortage_path, json={"quantity": 1}, headers=WAREHOUSE).status_code == 409
+            assert client.post(f"/returns/{shortage_id}/proposal", headers=WAREHOUSE).status_code == 409
+            detail = client.get(f"/tickets/{ticket_id}", headers=CUSTOMER).json()
+            assert "empty carton" in detail["messages"][0]["body"]
+            assert client.post(f"/supervisor/tickets/{ticket_id}/assign", json={"support_actor_id": "support-a"}, headers=SUPERVISOR).status_code == 200
+            assert client.post(f"/tickets/{ticket_id}/resolve", json={"body": "Investigation complete; no receipt recorded."}, headers=SUPPORT).status_code == 200
+            assert client.post(shortage_path, json=body, headers=WAREHOUSE).json()["ticket_id"] == ticket_id
+            assert client.post(shortage_path, json={"quantity": 1}, headers=WAREHOUSE).status_code == 409
+
+            overage_path = f"/warehouse/returns/{overage_id}/receipt"
+            second = client.post(overage_path, json={"quantity": 3}, headers=WAREHOUSE)
+            assert second.status_code == 202 and second.json()["ticket_id"] != ticket_id
+            assert "3 of 2" in client.get(f"/tickets/{second.json()['ticket_id']}", headers=CUSTOMER).json()["messages"][0]["body"]
+        with session_factory() as db:
+            for return_id in (shortage_id, overage_id):
+                assert db.get(m.ReturnRequest, return_id).status == "exception"
+                assert db.scalar(select(func.count()).select_from(m.Ticket).where(m.Ticket.return_id == return_id)) == 1
+                assert db.scalar(select(func.count()).select_from(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == return_id)) == 0
+            assert db.scalar(select(func.count()).select_from(m.RefundProposal)) == 0
+            assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+    finally:
+        app.dependency_overrides.clear()

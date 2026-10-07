@@ -17,8 +17,9 @@ class ReturnInput(BaseModel):
 
 
 class ReceiptInput(BaseModel):
-    quantity: int = Field(gt=0)
+    quantity: int = Field(ge=0)
     received_at: datetime | None = None
+    note: str = Field(default="", max_length=200)
 
 
 class ReceiptDisputeInput(BaseModel):

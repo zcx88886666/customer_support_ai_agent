@@ -165,6 +165,21 @@ def record_receipt(db: Session, actor: str, return_id: str, quantity: int, at: d
     return receipt
 
 
+def submit_warehouse_receipt(db: Session, actor: str, return_id: str, quantity: int, note: str,
+                             received_at: datetime, reported_at: datetime) -> m.WarehouseReceipt | m.Ticket:
+    request = db.get(m.ReturnRequest, return_id, with_for_update=True)
+    if request is None:
+        raise DomainError("return_not_found", "Return unavailable", 404)
+    existing_receipt = db.scalar(select(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == return_id))
+    if existing_receipt is not None:
+        return record_receipt(db, actor, return_id, quantity, received_at)
+    dispute = db.scalar(select(m.Ticket).where(m.Ticket.return_id == return_id, m.Ticket.topic == "warehouse receipt discrepancy"))
+    if quantity != request.quantity and (request.status == "return_requested" or dispute is not None):
+        explanation = note.strip() or "Quantity mismatch submitted through receipt endpoint without a warehouse note."
+        return report_receipt_dispute(db, actor, return_id, quantity, explanation, reported_at)
+    return record_receipt(db, actor, return_id, quantity, received_at)
+
+
 def report_receipt_dispute(db: Session, actor: str, return_id: str, observed_quantity: int, note: str, at: datetime) -> m.Ticket:
     request = db.get(m.ReturnRequest, return_id, with_for_update=True)
     if not request:

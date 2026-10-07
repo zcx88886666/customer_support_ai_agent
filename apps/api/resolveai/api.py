@@ -6,7 +6,7 @@ from typing import Literal
 import re
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -125,8 +125,12 @@ def get_return(return_id: str, actor: Principal = Depends(principal), db: Sessio
 @app.post("/warehouse/returns/{return_id}/receipt")
 def receipt(return_id: str, body: ReceiptInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("warehouse")
+    reported_at = datetime.now(timezone.utc)
     with db.begin():
-        result = d.record_receipt(db, actor.subject, return_id, body.quantity, body.received_at or datetime.now(timezone.utc))
+        result = d.submit_warehouse_receipt(db, actor.subject, return_id, body.quantity, body.note,
+                                            body.received_at or reported_at, reported_at)
+    if isinstance(result, m.Ticket):
+        return JSONResponse(status_code=202, content={"ticket_id": result.id, "status": "human_review", "return_id": return_id})
     return {"id": result.id, "return_id": return_id}
 
 

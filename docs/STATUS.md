@@ -1,8 +1,10 @@
 # ResolveAI implementation status
 
-> Verified through 2026-10-06 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
+> Verified through 2026-10-07 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
 
 ## Current snapshot
+
+- [Automatic receipt discrepancy handoff](implementation/automatic-receipt-dispute-2026-10-07.md) routes a mismatched count on the ordinary warehouse receipt endpoint directly into one linked human ticket and a terminal `exception` return; a matching count still records a receipt. HTTP 202 returns the ticket ID, including exact retries after ticket closure. The development core-business gold now checks this behavior, with independent review still pending. Focused tests **41/41**, full Python suite **283 passed with five optional skips**, no-key minimum **7/7**, Docker API/web builds and recreation, API health, web HTTP 200, and reviewer code check passed. No provider or Langfuse call was needed. Manual discrepancy adjudication remains open; the locked gate remains false.
 
 - [Ticket queue status and stable paging](implementation/ticket-queue-filter-2026-10-06.md) is implemented and deployed: `status=all|open|resolved`, created-time/id cursor, and a web selector that resists stale filter reloads. Focused API tests **9/9**, full Python suite **282 passed with five optional skips**, no-key minimum **7/7**, Docker API/web builds, three mock browser tests, recreated API/web containers, API health, web HTTP 200, and a dated open-ticket readback passed. Review-found page-shift and filter-race issues were fixed. The first Docker approval failed due an automatic-review usage limit; an approved retry succeeded. The locked gate remains false.
 

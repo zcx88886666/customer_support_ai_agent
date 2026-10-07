@@ -116,18 +116,22 @@ def main() -> None:
     second_review = {case["case_id"] for case in cases if case["risk_tier"] == "critical"} | double_normal
     output = args.output or ROOT / "evals/review_packets" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output.mkdir(parents=True, exist_ok=False)
-    (output / "review_cases.jsonl").write_text("".join(json.dumps(case, ensure_ascii=False) + "\n" for case in cases), encoding="utf-8")
+    packet_path = output / "review_cases.jsonl"
+    packet_path.write_text("".join(json.dumps(case, ensure_ascii=False) + "\n" for case in cases), encoding="utf-8")
     fields = ["case_id", "suite", "source_path", "source_line", "risk_tier", "reviewer_id", "decision", "notes", "revised_gold_json", "reviewed_at_utc"]
     def assignment(case):
         return {key: case.get(key, "") for key in fields}
     write_csv(output / "reviewer_a.csv", [assignment(case) for case in cases], fields)
     write_csv(output / "reviewer_b.csv", [assignment(case) for case in cases if case["case_id"] in second_review], fields)
     write_csv(output / "adjudication.csv", [{"case_id": case["case_id"], "suite": case["suite"],
-                                              "final_decision": "", "adjudicator_id": "", "notes": "", "reviewed_at_utc": ""}
+                                              "final_decision": "", "final_gold_json": "",
+                                              "adjudicator_id": "", "notes": "", "reviewed_at_utc": ""}
                                              for case in cases],
-              ["case_id", "suite", "final_decision", "adjudicator_id", "notes", "reviewed_at_utc"])
+              ["case_id", "suite", "final_decision", "final_gold_json",
+               "adjudicator_id", "notes", "reviewed_at_utc"])
     components = group_component_counts(cases)
     manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "status": "pending_independent_review",
+                "packet_sha256": hashlib.sha256(packet_path.read_bytes()).hexdigest(),
                 "source_datasets": source_meta, "case_count": len(cases), "suite_counts": dict(counts),
                 "critical_count": sum(case["risk_tier"] == "critical" for case in cases),
                 "normal_count": len(normal), "reviewer_a_assignments": len(cases),
@@ -145,7 +149,7 @@ def main() -> None:
         "Critical cases require two reviewers; `reviewer_b.csv` also contains at least 20% of normal cases. "
         "Check customer ownership, seven-day boundaries, explicit confirmation, approval-before-refund, idempotency, source/version validity, missing-evidence behavior, and final database/audit gold where applicable. "
         "Set `reviewer_id` to your human identity and `reviewed_at_utc` to an ISO-8601 UTC timestamp; explain each decision in `notes`. For `revise`, put a complete corrected gold object in `revised_gold_json` when possible. Record risk-tier concerns in notes. "
-        "Record the adjudicated result in `adjudication.csv`; do not directly change source labels during review. "
+        "Record the adjudicated result in `adjudication.csv`; for a final `revise`, place the complete corrected gold object in `final_gold_json`. Do not directly change source labels during review. "
         "Only after disagreements are resolved should a separate grouped dev/locked split be created and the locked suite run against frozen code, model, Prompt, policy, fixture, and scorer hashes. "
         "Cases sharing an order, customer, source conversation, or template must remain in one partition. The manifest reports connected group counts; these development fixtures cannot be relabeled into an independent locked partition.\n",
         encoding="utf-8",

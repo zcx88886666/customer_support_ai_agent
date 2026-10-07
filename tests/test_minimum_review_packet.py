@@ -53,3 +53,13 @@ def test_group_components_join_shared_template_family_across_suites():
         {"case_id": "c", "suite": "intent_route", "group_keys": {"family": "policy_qa"}},
     ]
     assert prepare_minimum_review.group_component_sizes(cases) == [2, 1]
+
+
+def test_shared_policy_bundle_alone_does_not_connect_review_families():
+    cases = [
+        {"case_id": "a", "suite": "policy_rag_positive",
+         "group_keys": {"source": "source-a", "family": "family-a", "bundle": "policy-v1"}},
+        {"case_id": "b", "suite": "policy_rag_positive",
+         "group_keys": {"source": "source-b", "family": "family-b", "bundle": "policy-v1"}},
+    ]
+    assert prepare_minimum_review.group_component_sizes(cases) == [1, 1]

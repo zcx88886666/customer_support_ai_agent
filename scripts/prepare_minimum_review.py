@@ -82,7 +82,7 @@ def group_component_sizes(cases: list[dict]) -> list[int]:
         return index
 
     for index, case in enumerate(cases):
-        for key in ("customer", "order", "source", "template", "family", "bundle"):
+        for key in ("customer", "order", "source", "template", "family"):
             value = case["group_keys"].get(key)
             if value in (None, "", "none"):
                 continue
@@ -156,7 +156,7 @@ def main() -> None:
         "Set `reviewer_id` to your human identity and `reviewed_at_utc` to an ISO-8601 UTC timestamp; explain each decision in `notes`. For `revise`, put a complete corrected gold object in `revised_gold_json` when possible. Record risk-tier concerns in notes. "
         "Record the adjudicated result in `adjudication.csv`; for a final `revise`, place the complete corrected gold object in `final_gold_json`. Do not directly change source labels during review. "
         "Only after disagreements are resolved should a separate grouped dev/locked split be created and the locked suite run against frozen code, model, Prompt, policy, fixture, and scorer hashes. "
-        "Cases sharing an order, customer, source conversation, or template family must remain in one partition. The conservative diagnostic also links the recorded policy bundle. The manifest reports connected group counts within and across suites; these development fixtures cannot be relabeled into an independent locked partition.\n",
+        "Cases sharing an order, customer, source conversation, or template family must remain in one partition. A shared policy bundle alone does not connect cases. The manifest reports connected group counts within and across suites; these development fixtures cannot be relabeled into an independent locked partition.\n",
         encoding="utf-8",
     )
     print(json.dumps({"output": str(output), **{key: manifest[key] for key in ("case_count", "critical_count", "normal_count", "reviewer_b_assignments", "missing_group_keys", "group_components_by_suite", "group_components_all_suites", "largest_group_component_cases", "locked_cases")}}, ensure_ascii=False))

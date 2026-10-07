@@ -59,13 +59,13 @@ def eligibility(db: Session, customer_id: str, order_id: str, item_id: str, quan
     bundle = db.get(m.PolicyBundle, order.policy_bundle_id)
     if not bundle or not product:
         raise DomainError("facts_missing", "Order facts incomplete")
-    if order.currency != "CNY" or order.status != "paid" or product.seller_id != order.seller_id:
-        return {"eligible": False, "reason": "unsupported_order", "policy_bundle_id": bundle.id}
     if quantity < 1 or quantity > item.quantity:
         return {"eligible": False, "reason": "invalid_quantity", "policy_bundle_id": bundle.id}
     committed = sum(r.quantity for r in db.scalars(select(m.ReturnRequest).where(m.ReturnRequest.order_item_id == item_id, m.ReturnRequest.status != "rejected")).all())
     if committed + quantity > item.quantity:
         return {"eligible": False, "reason": "quantity_already_requested", "policy_bundle_id": bundle.id}
+    if order.currency != "CNY" or order.status != "paid" or product.seller_id != order.seller_id:
+        return {"eligible": False, "reason": "unsupported_order", "policy_bundle_id": bundle.id}
     if not product.physical or not product.returnable or product.special_notice_accepted:
         return {"eligible": False, "reason": "product_exception", "policy_bundle_id": bundle.id}
     delivered = delivery_for_order(db, order_id)
@@ -82,34 +82,61 @@ def eligibility(db: Session, customer_id: str, order_id: str, item_id: str, quan
 def create_return(db: Session, customer_id: str, order_id: str, item_id: str, quantity: int, reason: str, confirmed: bool, key: str, at: datetime, plan_revision: int = 1) -> m.ReturnRequest:
     if not confirmed or not reason.strip() or not key.strip():
         raise DomainError("confirmation_required", "Order, item, quantity, reason and explicit confirmation required", 422)
+    if db.get(m.Customer, customer_id, with_for_update=True) is None:
+        raise DomainError("order_not_found", "Order unavailable", 404)
+    normalized_reason = reason.strip()
     previous = db.scalar(select(m.ReturnRequest).where(m.ReturnRequest.idempotency_key == key))
     if previous:
         if previous.customer_id != customer_id:
             raise DomainError("return_not_found", "Return unavailable", 404)
-        if (previous.customer_id, previous.order_id, previous.order_item_id, previous.quantity, previous.reason) != (customer_id, order_id, item_id, quantity, reason):
+        if (previous.customer_id, previous.order_id, previous.order_item_id, previous.quantity, previous.reason) != (customer_id, order_id, item_id, quantity, normalized_reason):
             raise DomainError("idempotency_conflict", "Key reused with different request")
         return previous
-    # Serialize the quantity check and insert for this order on PostgreSQL.
-    # The unique idempotency key remains the final guard for duplicate retries.
+    if db.scalar(select(m.AuditEvent.id).where(m.AuditEvent.actor_id == customer_id,
+                                               m.AuditEvent.action == "create_return_review_ticket",
+                                               m.AuditEvent.idempotency_key == key)):
+        raise DomainError("idempotency_conflict", "Key already used for a return review")
+    # The customer lock serializes return and review outcomes for one key, even
+    # when the requests concern different orders. The order lock guards count.
     order = db.scalar(select(m.Order).where(m.Order.id == order_id, m.Order.customer_id == customer_id).with_for_update())
     if order is None:
         raise DomainError("order_not_found", "Order unavailable", 404)
     # A concurrent request with this key may have committed while we waited.
     previous = db.scalar(select(m.ReturnRequest).where(m.ReturnRequest.idempotency_key == key))
     if previous:
-        if (previous.customer_id, previous.order_id, previous.order_item_id, previous.quantity, previous.reason) != (customer_id, order_id, item_id, quantity, reason):
+        if (previous.customer_id, previous.order_id, previous.order_item_id, previous.quantity, previous.reason) != (customer_id, order_id, item_id, quantity, normalized_reason):
             raise DomainError("idempotency_conflict", "Key reused with different request")
         return previous
+    if db.scalar(select(m.AuditEvent.id).where(m.AuditEvent.actor_id == customer_id,
+                                               m.AuditEvent.action == "create_return_review_ticket",
+                                               m.AuditEvent.idempotency_key == key)):
+        raise DomainError("idempotency_conflict", "Key already used for a return review")
     result = eligibility(db, customer_id, order_id, item_id, quantity, at)
     if not result["eligible"]:
         raise DomainError(result["reason"], "Return requires human review or is ineligible")
-    request = m.ReturnRequest(order_id=order_id, customer_id=customer_id, order_item_id=item_id, quantity=quantity, reason=reason.strip(), created_at=aware(at), idempotency_key=key, plan_revision=plan_revision, policy_bundle_id=result["policy_bundle_id"])
+    request = m.ReturnRequest(order_id=order_id, customer_id=customer_id, order_item_id=item_id, quantity=quantity, reason=normalized_reason, created_at=aware(at), idempotency_key=key, plan_revision=plan_revision, policy_bundle_id=result["policy_bundle_id"])
     db.add(request)
     db.flush()
     old = order.version
     order.version += 1
     audit(db, customer_id, "create_return", "return", request.id, before=old, after=order.version, bundle=request.policy_bundle_id, key=key)
     return request
+
+
+def submit_return_or_review(db: Session, customer_id: str, order_id: str, item_id: str, quantity: int,
+                            reason: str, confirmed: bool, key: str, at: datetime,
+                            plan_revision: int = 1) -> m.ReturnRequest | tuple[m.Ticket, str]:
+    if db.get(m.Customer, customer_id, with_for_update=True) is None:
+        raise DomainError("order_not_found", "Order unavailable", 404)
+    existing_review = db.scalar(select(m.Ticket).where(m.Ticket.customer_id == customer_id, m.Ticket.review_key == key))
+    if existing_review is not None:
+        return request_return_review(db, customer_id, order_id, item_id, quantity, reason, confirmed, key, at, plan_revision)
+    try:
+        return create_return(db, customer_id, order_id, item_id, quantity, reason, confirmed, key, at, plan_revision)
+    except DomainError as error:
+        if error.code not in {"outside_window", "product_exception", "delivery_unverified", "unsupported_order"}:
+            raise
+    return request_return_review(db, customer_id, order_id, item_id, quantity, reason, confirmed, key, at, plan_revision)
 
 
 def request_return_review(db: Session, customer_id: str, order_id: str, item_id: str, quantity: int,
@@ -126,9 +153,13 @@ def request_return_review(db: Session, customer_id: str, order_id: str, item_id:
         if previous.review_payload_hash != fingerprint or not previous.topic.startswith("return eligibility review: "):
             raise DomainError("idempotency_conflict", "Key reused with a different review request")
         return previous, previous.topic.removeprefix("return eligibility review: ")
+    if db.scalar(select(m.ReturnRequest.id).where(m.ReturnRequest.customer_id == customer_id, m.ReturnRequest.idempotency_key == key)):
+        raise DomainError("idempotency_conflict", "Key already used for a return request")
     order = db.scalar(select(m.Order).where(m.Order.id == order_id, m.Order.customer_id == customer_id).with_for_update())
     if order is None:
         raise DomainError("order_not_found", "Order unavailable", 404)
+    if db.scalar(select(m.ReturnRequest.id).where(m.ReturnRequest.customer_id == customer_id, m.ReturnRequest.idempotency_key == key)):
+        raise DomainError("idempotency_conflict", "Key already used for a return request")
     result = eligibility(db, customer_id, order_id, item_id, quantity, at)
     reason_code = result["reason"]
     if result["eligible"]:

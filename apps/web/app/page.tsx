@@ -42,7 +42,6 @@ export default function Home() {
   const [keycloak, setKeycloak] = useState<Keycloak | null>(null);
   const threadId = useRef("");
   const submission = useRef({ signature: "", key: "" });
-  const reviewSubmission = useRef({ signature: "", key: "" });
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [ticketStatus, setTicketStatus] = useState<TicketStatus>("all");
   const ticketStatusRef = useRef<TicketStatus>("all");
@@ -68,7 +67,6 @@ export default function Home() {
     setTicketStatus(ticketStatusRef.current);
     setOrders([]); setItems([]); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setAnswer(""); setConfirmed(false); setProfile(null); setLanguageChoice("中文"); setTickets([]); setTicketsHasMore(false); setTicketDetail(null); setTicketText(""); setSupportAssignee(""); setWarehouseNote(""); setProposals([]); setDeadlineAlerts([]); setNotice("");
     submission.current = { signature: "", key: "" };
-    reviewSubmission.current = { signature: "", key: "" };
   }, [actor, role]);
 
   useLayoutEffect(() => {
@@ -135,20 +133,28 @@ export default function Home() {
   }
   async function submitReturn() {
     if (!confirmed || !items[0]) return;
+    const requestedGeneration = identityGeneration.current;
     try {
       const signature = JSON.stringify([orderId, items[0].id, quantity, reason]);
       if (submission.current.signature !== signature) submission.current = { signature, key: crypto.randomUUID() };
       const value = await call("/returns", { method: "POST", body: JSON.stringify({ order_id: orderId, order_item_id: items[0].id, quantity, reason, confirmed, idempotency_key: submission.current.key }) });
-      setReturnId(value.id); setNotice(`申请已提交：${value.id}，尚未退款`);
-    } catch (error) { showError(error); }
+      if (identityGeneration.current !== requestedGeneration) return;
+      if (value.ticket_id) {
+        setReturnId("");
+        await loadTickets();
+        if (identityGeneration.current === requestedGeneration) setNotice(`已提交人工复核工单 ${value.ticket_id}；尚未建立退货申请或退款。`);
+      } else {
+        setReturnId(value.id); setNotice(`申请已提交：${value.id}，尚未退款`);
+      }
+    } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); }
   }
   async function requestReturnReview() {
     if (!confirmed || !items[0]) return;
     const requestedGeneration = identityGeneration.current;
     try {
       const signature = JSON.stringify([orderId, items[0].id, quantity, reason]);
-      if (reviewSubmission.current.signature !== signature) reviewSubmission.current = { signature, key: crypto.randomUUID() };
-      const value = await call("/returns/review", { method: "POST", body: JSON.stringify({ order_id: orderId, order_item_id: items[0].id, quantity, reason, confirmed, idempotency_key: reviewSubmission.current.key }) });
+      if (submission.current.signature !== signature) submission.current = { signature, key: crypto.randomUUID() };
+      const value = await call("/returns/review", { method: "POST", body: JSON.stringify({ order_id: orderId, order_item_id: items[0].id, quantity, reason, confirmed, idempotency_key: submission.current.key }) });
       if (identityGeneration.current !== requestedGeneration) return;
       setReturnId("");
       await loadTickets();

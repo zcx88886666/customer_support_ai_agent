@@ -99,7 +99,13 @@ def check_eligibility(order_id: str, item_id: str, quantity: int = 1, actor: Pri
 def create_return(body: ReturnInput, actor: Principal = Depends(principal), db: Session = Depends(get_db)):
     actor.require("customer")
     with db.begin():
-        request = d.create_return(db, actor.customer_id, body.order_id, body.order_item_id, body.quantity, body.reason, body.confirmed, body.idempotency_key, datetime.now(timezone.utc), body.plan_revision)
+        result = d.submit_return_or_review(db, actor.customer_id, body.order_id, body.order_item_id, body.quantity,
+                                           body.reason, body.confirmed, body.idempotency_key, datetime.now(timezone.utc),
+                                           body.plan_revision)
+    if isinstance(result, tuple):
+        ticket, reason_code = result
+        return JSONResponse(status_code=202, content={"status": "human_review", "ticket_id": ticket.id, "reason_code": reason_code})
+    request = result
     return {"id": request.id, "status": request.status}
 
 

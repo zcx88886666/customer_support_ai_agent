@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
@@ -372,5 +373,142 @@ def test_direct_mismatched_receipt_routes_to_one_terminal_human_ticket(session_f
                 assert db.scalar(select(func.count()).select_from(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == return_id)) == 0
             assert db.scalar(select(func.count()).select_from(m.RefundProposal)) == 0
             assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_direct_ineligible_return_opens_one_review_ticket_without_a_return(session_factory):
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    body = {"order_id": "demo-order-02", "order_item_id": "demo-item-02", "quantity": 1,
+            "reason": "parcel never arrived", "confirmed": True, "idempotency_key": "direct-undelivered"}
+    try:
+        with TestClient(app) as client:
+            assert client.post("/returns", json=body, headers=FOREIGN_CUSTOMER).status_code == 404
+            assert client.post("/returns", json={**body, "quantity": 2}, headers=CUSTOMER).status_code == 409
+            first = client.post("/returns", json=body, headers=CUSTOMER)
+            assert first.status_code == 202
+            assert first.json()["status"] == "human_review"
+            assert first.json()["reason_code"] == "delivery_unverified"
+            ticket_id = first.json()["ticket_id"]
+            assert client.post("/returns", json=body, headers=CUSTOMER).json()["ticket_id"] == ticket_id
+            assert client.post("/returns", json={**body, "reason": "changed"}, headers=CUSTOMER).status_code == 409
+            assert client.get(f"/tickets/{ticket_id}", headers=CUSTOMER).status_code == 200
+            assert client.get(f"/tickets/{ticket_id}", headers=FOREIGN_CUSTOMER).status_code == 404
+        with session_factory() as db:
+            assert db.scalar(select(func.count()).select_from(m.Ticket).where(m.Ticket.id == ticket_id)) == 1
+            assert db.scalar(select(func.count()).select_from(m.ReturnRequest)) == 0
+            assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_return_and_review_cannot_reuse_the_same_key_after_eligibility_changes(session_factory):
+    now = datetime.now(timezone.utc)
+    with session_factory.begin() as db:
+        db.get(m.Shipment, "demo-shipment-03").delivered_at = now - timedelta(days=2)
+        request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 1,
+                                  "not needed", True, "shared-return-key", now)
+        return_id = request.id
+        db.get(m.Shipment, "demo-shipment-03").delivered_at = None
+    with session_factory.begin() as db:
+        with pytest.raises(d.DomainError) as denied:
+            d.request_return_review(db, "cust-01", "demo-order-03", "demo-item-03", 1,
+                                    "not needed", True, "shared-return-key", now)
+        assert denied.value.code == "idempotency_conflict"
+        assert db.scalar(select(func.count()).select_from(m.Ticket)) == 0
+
+    with session_factory.begin() as db:
+        ticket, reason = d.request_return_review(db, "cust-01", "demo-order-02", "demo-item-02", 1,
+                                                 "parcel missing", True, "shared-review-key", now)
+        assert reason == "delivery_unverified"
+        ticket_id = ticket.id
+        db.get(m.Shipment, "demo-shipment-02").delivered_at = now - timedelta(days=2)
+    with session_factory.begin() as db:
+        with pytest.raises(d.DomainError) as denied:
+            d.create_return(db, "cust-01", "demo-order-02", "demo-item-02", 1,
+                            "parcel missing", True, "shared-review-key", now)
+        assert denied.value.code == "idempotency_conflict"
+        assert db.get(m.ReturnRequest, return_id) is not None
+        assert db.get(m.Ticket, ticket_id) is not None
+        assert db.scalar(select(func.count()).select_from(m.ReturnRequest)) == 1
+
+
+def test_unsupported_order_with_invalid_quantity_is_not_sent_to_human_review(session_factory):
+    with session_factory.begin() as db:
+        db.get(m.Order, "demo-order-01").currency = "USD"
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.post("/returns", headers=CUSTOMER, json={
+                "order_id": "demo-order-01", "order_item_id": "demo-item-01", "quantity": 2,
+                "reason": "wrong count", "confirmed": True, "idempotency_key": "invalid-unsupported",
+            })
+            assert response.status_code == 409 and response.json()["code"] == "invalid_quantity"
+        with session_factory() as db:
+            assert db.scalar(select(func.count()).select_from(m.Ticket)) == 0
+            assert db.scalar(select(func.count()).select_from(m.ReturnRequest)) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_unsupported_order_with_overcommitted_quantity_is_not_sent_to_human_review(session_factory):
+    now = datetime.now(timezone.utc)
+    with session_factory.begin() as db:
+        item = db.get(m.OrderItem, "demo-item-03")
+        db.get(m.Shipment, "demo-shipment-03").delivered_at = now - timedelta(days=2)
+        d.create_return(db, "cust-01", "demo-order-03", item.id, 1, "first item", True, "first-commit", now)
+        requested_quantity = item.quantity
+        db.get(m.Order, "demo-order-03").currency = "USD"
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.post("/returns", headers=CUSTOMER, json={
+                "order_id": "demo-order-03", "order_item_id": "demo-item-03", "quantity": requested_quantity,
+                "reason": "second request", "confirmed": True, "idempotency_key": "overcommit-unsupported",
+            })
+            assert response.status_code == 409 and response.json()["code"] == "quantity_already_requested"
+        with session_factory() as db:
+            assert db.scalar(select(func.count()).select_from(m.Ticket)) == 0
+            assert db.scalar(select(func.count()).select_from(m.ReturnRequest)) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_normal_return_retries_with_whitespace_reason_keep_one_return(session_factory):
+    with session_factory.begin() as db:
+        db.get(m.Shipment, "demo-shipment-01").delivered_at = datetime.now(timezone.utc) - timedelta(days=2)
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    body = {"order_id": "demo-order-01", "order_item_id": "demo-item-01", "quantity": 1,
+            "reason": " changed mind ", "confirmed": True, "idempotency_key": "reason-normalization"}
+    try:
+        with TestClient(app) as client:
+            first = client.post("/returns", headers=CUSTOMER, json=body)
+            assert first.status_code == 200
+            return_id = first.json()["id"]
+            retry = client.post("/returns", headers=CUSTOMER, json=body)
+            assert retry.status_code == 200 and retry.json()["id"] == return_id
+            assert client.post("/returns", headers=CUSTOMER, json={**body, "reason": "different"}).status_code == 409
+        with session_factory() as db:
+            assert db.scalar(select(func.count()).select_from(m.ReturnRequest)) == 1
+            assert db.scalar(select(func.count()).select_from(m.Ticket)) == 0
     finally:
         app.dependency_overrides.clear()

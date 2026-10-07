@@ -8,7 +8,7 @@ from hypothesis import example, given, settings, strategies as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from resolveai import domain as d, models as m
+from resolveai import domain as d, models as m, worker
 from resolveai.db import Base, make_engine
 from resolveai.seed import seed_demo
 
@@ -240,5 +240,109 @@ def test_generated_receipt_exception_sequences_never_release_disputed_returns(
                     assert receipts[0].quantity == requested and not disputes
                 if ledgers:
                     assert not disputes and receipts and request.status == "refund_issued"
+    finally:
+        engine.dispose()
+
+
+@settings(max_examples=60, deadline=None)
+@example(denial="inspection_failed", actions=["proposal", "inspect_pass", "receipt", "worker"])
+@example(denial="supervisor_rejected", actions=["issue", "approve", "reject", "proposal", "worker"])
+@given(
+    denial=st.sampled_from(("inspection_failed", "supervisor_rejected")),
+    actions=st.lists(st.sampled_from(("receipt", "inspect_pass", "inspect_fail", "proposal",
+                                      "approve", "reject", "issue", "worker")),
+                     min_size=0, max_size=15),
+)
+def test_terminal_denials_never_issue_refund_after_retries(denial: str, actions: list[str]):
+    """A committed failed inspection or rejection cannot be undone by later actions."""
+    engine = make_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            seed_demo(db, AT)
+            request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 2,
+                                      "terminal denial", True, "terminal-denial", AT)
+            return_id = request.id
+        with factory.begin() as db:
+            d.record_receipt(db, "warehouse-test", return_id, 2, AT + timedelta(hours=1))
+        with factory.begin() as db:
+            inspection = d.record_inspection(db, "warehouse-test", return_id,
+                                             denial != "inspection_failed", "checked", AT + timedelta(hours=2))
+            inspection_id = inspection.id
+        proposal_id = None
+        if denial == "inspection_failed":
+            with pytest.raises(d.DomainError, match="Passing inspection required"):
+                with factory.begin() as db:
+                    d.create_proposal(db, return_id, AT + timedelta(hours=3))
+        else:
+            with factory.begin() as db:
+                proposal = d.create_proposal(db, return_id, AT + timedelta(hours=3))
+                proposal_id = proposal.id
+            with factory.begin() as db:
+                d.decide_proposal(db, "supervisor-test", proposal_id, False, AT + timedelta(hours=4))
+            with pytest.raises(d.DomainError, match="Valid supervisor approval required"):
+                with factory.begin() as db:
+                    d.issue_refund(db, proposal_id, f"refund:{proposal_id}", AT + timedelta(hours=5))
+
+        for action in ["worker", *actions]:
+            if action == "worker":
+                assert worker.issue_approved_once(session_factory=factory) == []
+            else:
+                try:
+                    with factory.begin() as db:
+                        if action == "receipt":
+                            d.record_receipt(db, "warehouse-test", return_id, 2, AT + timedelta(hours=1))
+                        elif action in ("inspect_pass", "inspect_fail"):
+                            d.record_inspection(db, "warehouse-test", return_id,
+                                                action == "inspect_pass", "checked", AT + timedelta(hours=2))
+                        elif action == "proposal":
+                            d.create_proposal(db, return_id, AT + timedelta(hours=3))
+                        elif action in ("approve", "reject") and proposal_id:
+                            d.decide_proposal(db, "supervisor-test", proposal_id,
+                                              action == "approve", AT + timedelta(hours=4))
+                        elif action == "issue" and proposal_id:
+                            d.issue_refund(db, proposal_id, f"refund:{proposal_id}",
+                                           AT + timedelta(hours=5))
+                except d.DomainError:
+                    # Conflicting or out-of-order calls must roll back completely.
+                    pass
+            with factory() as db:
+                request = db.get(m.ReturnRequest, return_id)
+                item = db.get(m.OrderItem, "demo-item-03")
+                receipt = db.scalar(select(m.WarehouseReceipt).where(m.WarehouseReceipt.return_id == return_id))
+                inspections = db.scalars(select(m.Inspection).where(m.Inspection.receipt_id == receipt.id)).all()
+                proposals = db.scalars(select(m.RefundProposal).where(m.RefundProposal.return_id == return_id)).all()
+                approvals = db.scalars(select(m.Approval)).all()
+                tickets = db.scalars(select(m.Ticket).where(m.Ticket.return_id == return_id)).all()
+                assert len(inspections) == 1 and inspections[0].id == inspection_id
+                assert len(db.scalars(select(m.RefundLedger)).all()) == 0
+                assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                    m.AuditEvent.action == "issue_refund")) == 0
+                assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                    m.AuditEvent.action == "record_receipt")) == 1
+                assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                    m.AuditEvent.action == "record_inspection")) == 1
+                assert item.refunded_quantity == item.refunded_cents == 0
+                if denial == "inspection_failed":
+                    assert request.status == "exception" and not inspections[0].passed
+                    assert not proposals and not approvals
+                    assert len(tickets) == 1 and tickets[0].topic == "return inspection exception"
+                    assert tickets[0].customer_id == request.customer_id
+                    assert tickets[0].order_id == request.order_id
+                    assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                        m.AuditEvent.action == "create_ticket")) == 1
+                    assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                        m.AuditEvent.action == "create_proposal")) == 0
+                else:
+                    assert request.status == "rejected" and inspections[0].passed
+                    assert len(proposals) == 1 and proposals[0].id == proposal_id
+                    assert proposals[0].status == "rejected"
+                    assert len(approvals) == 1 and approvals[0].proposal_id == proposal_id
+                    assert approvals[0].decision == "rejected" and not tickets
+                    assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                        m.AuditEvent.action == "rejected")) == 1
+                    assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                        m.AuditEvent.action == "create_proposal")) == 1
     finally:
         engine.dispose()

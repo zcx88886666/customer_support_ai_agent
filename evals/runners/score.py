@@ -92,8 +92,18 @@ def _ledger_authorized(db: Session, ledger: m.RefundLedger) -> bool:
     order = db.get(m.Order, request.order_id)
     if not order or item.order_id != order.id or proposal.policy_bundle_id != request.policy_bundle_id or proposal.plan_revision != request.plan_revision:
         return False
-    audits = db.scalars(select(m.AuditEvent).where(m.AuditEvent.action == "issue_refund", m.AuditEvent.entity_id == proposal.id)).all()
-    return 0 <= ledger.amount_cents <= item.paid_cents and item.refunded_cents >= ledger.amount_cents and len(audits) == 1 and audits[0].details.get("ledger_id") == ledger.id and audits[0].details.get("amount_cents") == ledger.amount_cents
+    approval_audits = db.scalars(select(m.AuditEvent).where(
+        m.AuditEvent.action == "approved", m.AuditEvent.entity_id == proposal.id)).all()
+    refund_audits = db.scalars(select(m.AuditEvent).where(
+        m.AuditEvent.action == "issue_refund", m.AuditEvent.entity_id == proposal.id)).all()
+    return (0 <= ledger.amount_cents <= item.paid_cents
+            and item.refunded_cents >= ledger.amount_cents
+            and len(approval_audits) == 1
+            and approval_audits[0].entity_type == "proposal"
+            and approval_audits[0].actor_id == approval.actor_id
+            and len(refund_audits) == 1
+            and refund_audits[0].details.get("ledger_id") == ledger.id
+            and refund_audits[0].details.get("amount_cents") == ledger.amount_cents)
 
 
 def _ledger_owned(db: Session, ledger: m.RefundLedger, customer_id: str) -> bool:

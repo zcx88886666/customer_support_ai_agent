@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
+
 from resolveai import domain as d, models as m
 from evals.runners.score import score_case
 
@@ -110,6 +112,26 @@ def test_scorer_rejects_approval_recorded_after_refund(db):
     approval = d.decide_proposal(db, "supervisor-test", proposal.id, True, AT + timedelta(hours=4))
     d.issue_refund(db, proposal.id, f"refund:{proposal.id}", AT + timedelta(hours=5))
     approval.decided_at = AT + timedelta(hours=6)
+    db.flush()
+
+    checks, ledger_count = score_case(
+        case({"ledger_count": 1, "return_count": 1}),
+        {"status": "answered", "answer": "模拟退款已执行", "return_id": request.id}, 200, db)
+    assert ledger_count == 1
+    assert not checks["refund_authorized"]
+
+
+def test_scorer_rejects_approval_audit_attributed_to_another_actor(db):
+    request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1,
+                              "scorer case", True, "scorer-wrong-approver-audit", AT)
+    d.record_receipt(db, "warehouse-test", request.id, 1, AT + timedelta(hours=1))
+    d.record_inspection(db, "warehouse-test", request.id, True, "intact", AT + timedelta(hours=2))
+    proposal = d.create_proposal(db, request.id, AT + timedelta(hours=3))
+    d.decide_proposal(db, "supervisor-test", proposal.id, True, AT + timedelta(hours=4))
+    d.issue_refund(db, proposal.id, f"refund:{proposal.id}", AT + timedelta(hours=5))
+    approval_audit = db.scalar(select(m.AuditEvent).where(
+        m.AuditEvent.action == "approved", m.AuditEvent.entity_id == proposal.id))
+    approval_audit.actor_id = "cust-02"
     db.flush()
 
     checks, ledger_count = score_case(

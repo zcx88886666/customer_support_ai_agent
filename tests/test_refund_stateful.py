@@ -154,3 +154,91 @@ def test_partitioned_returns_preserve_paid_allocation_and_ownership(parts: list[
             assert item.refunded_cents == item.paid_cents
     finally:
         engine.dispose()
+
+
+@settings(max_examples=100, deadline=None)
+@example(requested=1, observed_delta=-1,
+         actions=["mismatch", "mismatch", "match", "inspect_pass", "proposal", "approve", "issue"])
+@example(requested=3, observed_delta=1,
+         actions=["match", "mismatch", "inspect_pass", "proposal", "approve", "issue"])
+@given(requested=st.integers(min_value=1, max_value=3),
+       observed_delta=st.sampled_from((-1, 1)),
+       actions=st.lists(st.sampled_from(("match", "mismatch", "inspect_pass", "inspect_fail",
+                                         "proposal", "approve", "issue")), min_size=1, max_size=14))
+def test_generated_receipt_exception_sequences_never_release_disputed_returns(
+        requested: int, observed_delta: int, actions: list[str]):
+    """A quantity dispute remains terminal despite later receipt/refund attempts."""
+    engine = make_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            seed_demo(db, AT)
+            request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03",
+                                      requested, "stateful receipt", True, "stateful-receipt", AT)
+            return_id = request.id
+        dispute_seen = False
+        for action in actions:
+            with factory() as db:
+                before = db.get(m.ReturnRequest, return_id)
+                expect_dispute = action == "mismatch" and before.status == "return_requested"
+            handoff_id = None
+            try:
+                with factory.begin() as db:
+                    proposal = db.scalar(select(m.RefundProposal).where(
+                        m.RefundProposal.return_id == return_id))
+                    if action in {"match", "mismatch"}:
+                        observed = requested if action == "match" else requested + observed_delta
+                        outcome = d.submit_warehouse_receipt(db, "warehouse-test", return_id, observed,
+                                                             "count checked", AT + timedelta(hours=1),
+                                                             AT + timedelta(hours=1))
+                        if expect_dispute:
+                            assert isinstance(outcome, m.Ticket)
+                            assert outcome.return_id == return_id
+                            assert outcome.topic == "warehouse receipt discrepancy"
+                            handoff_id = outcome.id
+                    elif action in {"inspect_pass", "inspect_fail"}:
+                        d.record_inspection(db, "warehouse-test", return_id,
+                                            action == "inspect_pass", "checked", AT + timedelta(hours=2))
+                    elif action == "proposal":
+                        d.create_proposal(db, return_id, AT + timedelta(hours=3))
+                    elif action == "approve" and proposal:
+                        d.decide_proposal(db, "supervisor-test", proposal.id, True,
+                                          AT + timedelta(hours=4))
+                    elif action == "issue" and proposal:
+                        d.issue_refund(db, proposal.id, f"refund:{proposal.id}",
+                                       AT + timedelta(hours=5))
+            except d.DomainError:
+                assert not expect_dispute, "A valid quantity mismatch must create a review ticket"
+                pass
+            with factory() as db:
+                request = db.get(m.ReturnRequest, return_id)
+                receipts = db.scalars(select(m.WarehouseReceipt).where(
+                    m.WarehouseReceipt.return_id == return_id)).all()
+                disputes = db.scalars(select(m.Ticket).where(
+                    m.Ticket.return_id == return_id,
+                    m.Ticket.topic == "warehouse receipt discrepancy")).all()
+                ledgers = db.scalars(select(m.RefundLedger)).all()
+                item = db.get(m.OrderItem, "demo-item-03")
+                assert len(receipts) <= 1 and len(disputes) <= 1 and len(ledgers) <= 1
+                assert item.refunded_cents == sum(ledger.amount_cents for ledger in ledgers)
+                if expect_dispute:
+                    assert len(disputes) == 1 and disputes[0].id == handoff_id
+                    dispute_seen = True
+                if dispute_seen:
+                    assert len(disputes) == 1
+                    assert request.status == "exception" and not receipts and not ledgers
+                if disputes:
+                    assert request.status == "exception" and not receipts and not ledgers
+                    assert disputes[0].customer_id == request.customer_id
+                    assert disputes[0].order_id == request.order_id
+                    assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                        m.AuditEvent.action == "report_receipt_dispute")) == 1
+                    assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(
+                        m.AuditEvent.action == "create_ticket")) == 1
+                if receipts:
+                    assert receipts[0].quantity == requested and not disputes
+                if ledgers:
+                    assert not disputes and receipts and request.status == "refund_issued"
+    finally:
+        engine.dispose()

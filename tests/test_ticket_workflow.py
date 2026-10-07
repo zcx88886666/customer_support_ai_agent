@@ -180,6 +180,62 @@ def test_ticket_queue_pages_newest_first_without_losing_overflow(session_factory
         app.dependency_overrides.clear()
 
 
+def test_open_ticket_filter_surfaces_old_work_beyond_resolved_queue_page(session_factory):
+    start = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        for index in range(105):
+            db.add(m.Ticket(id=f"resolved-{index:03d}", customer_id="cust-01", topic="old work",
+                            status="resolved", created_at=start + timedelta(minutes=index + 3)))
+        for index in range(3):
+            db.add(m.Ticket(id=f"open-{index}", customer_id="cust-01", topic="needs review",
+                            status="open", support_actor_id="support-a", created_at=start + timedelta(minutes=index)))
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            assert len(client.get("/tickets", headers=SUPERVISOR).json()) == 100
+            open_queue = client.get("/tickets?status=open", headers=SUPERVISOR)
+            assert open_queue.status_code == 200
+            assert [ticket["id"] for ticket in open_queue.json()] == ["open-2", "open-1", "open-0"]
+            assert [ticket["id"] for ticket in client.get("/tickets?status=open", headers=SUPPORT).json()] == ["open-2", "open-1", "open-0"]
+            assert client.get("/tickets?status=open", headers=FOREIGN_CUSTOMER).json() == []
+            assert len(client.get("/tickets?status=resolved", headers=CUSTOMER).json()) == 100
+            assert len(client.get("/tickets?status=resolved&offset=100", headers=CUSTOMER).json()) == 5
+            assert client.get("/tickets?status=invalid", headers=SUPERVISOR).status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_open_ticket_cursor_does_not_skip_work_after_earlier_ticket_resolves(session_factory):
+    start = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        for index in range(101):
+            db.add(m.Ticket(id=f"queue-{index:03d}", customer_id="cust-01", topic="review",
+                            status="open", created_at=start + timedelta(seconds=index)))
+
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            first = client.get("/tickets?status=open", headers=SUPERVISOR).json()
+            assert len(first) == 100 and first[-1]["id"] == "queue-001"
+            cursor = {"status": "open", "before_created_at": first[-1]["created_at"], "before_id": first[-1]["id"]}
+            with session_factory.begin() as db:
+                db.get(m.Ticket, "queue-100").status = "resolved"
+            page = client.get("/tickets", params=cursor, headers=SUPERVISOR)
+            assert page.status_code == 200 and [ticket["id"] for ticket in page.json()] == ["queue-000"]
+            assert client.get("/tickets?status=open&before_id=queue-001", headers=SUPERVISOR).status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_receipt_shortage_is_reported_for_human_review_before_receipt(session_factory):
     clock = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
     with session_factory.begin() as db:

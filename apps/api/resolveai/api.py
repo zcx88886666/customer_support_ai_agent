@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Literal
 import re
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from . import domain as d, models as m
@@ -264,7 +265,11 @@ def remove_preference(key: str, actor: Principal = Depends(principal), db: Sessi
 
 
 @app.get("/tickets")
-def tickets(offset: int = Query(default=0, ge=0), actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+def tickets(offset: int = Query(default=0, ge=0), status: Literal["all", "open", "resolved"] = Query(default="all"),
+            before_created_at: datetime | None = Query(default=None), before_id: str | None = Query(default=None),
+            actor: Principal = Depends(principal), db: Session = Depends(get_db)):
+    if (before_created_at is None) != (before_id is None) or before_id is not None and offset:
+        raise HTTPException(422, "Use both cursor fields without an offset")
     if "supervisor" in actor.roles:
         query = select(m.Ticket)
     else:
@@ -276,8 +281,14 @@ def tickets(offset: int = Query(default=0, ge=0), actor: Principal = Depends(pri
         if not conditions:
             raise HTTPException(403, "Role required")
         query = select(m.Ticket).where(or_(*conditions))
+    if status != "all":
+        query = query.where(m.Ticket.status == status)
+    if before_created_at is not None and before_id is not None:
+        query = query.where(or_(m.Ticket.created_at < before_created_at,
+                                and_(m.Ticket.created_at == before_created_at, m.Ticket.id < before_id)))
     query = query.order_by(m.Ticket.created_at.desc(), m.Ticket.id.desc()).offset(offset).limit(100)
-    return [{"id": ticket.id, "order_id": ticket.order_id, "return_id": ticket.return_id, "status": ticket.status, "topic": ticket.topic} for ticket in db.scalars(query).all()]
+    return [{"id": ticket.id, "order_id": ticket.order_id, "return_id": ticket.return_id, "status": ticket.status,
+             "topic": ticket.topic, "created_at": ticket.created_at} for ticket in db.scalars(query).all()]
 
 
 def _visible_ticket(db: Session, actor: Principal, ticket_id: str, *, lock: bool = False) -> m.Ticket:

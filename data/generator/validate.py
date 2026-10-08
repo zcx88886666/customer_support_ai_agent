@@ -47,6 +47,9 @@ def validate(folder: Path) -> dict:
     ledgers = index_unique("refund_ledger", "proposal_id")
     tickets = index_unique("tickets", "order_id")
     messages = {key: list(group) for key, group in groupby(rows(folder / "conversation_messages.csv"), key=lambda row: row["ticket_id"])}
+    for ticket_id, conversation in messages.items():
+        if len({entry["id"] for entry in conversation}) != len(conversation):
+            violations.append(f"duplicate conversation message {ticket_id}")
     order_rows = rows(folder / "orders.csv")
     payment_rows = rows(folder / "payments.csv")
     shipment_rows = rows(folder / "shipments.csv")
@@ -67,6 +70,8 @@ def validate(folder: Path) -> dict:
         items = list(items_iter)
         if group_id != order_id:
             violations.append(f"item group mismatch {order_id}")
+        if len({item["id"] for item in items}) != len(items):
+            violations.append(f"duplicate item {order_id}")
         paid_total = 0
         for item in items:
             allocation = next(allocation_rows, None)
@@ -97,6 +102,8 @@ def validate(folder: Path) -> dict:
         events = list(events_iter)
         if event_id != shipment["id"]:
             violations.append(f"event mismatch {order_id}")
+        if len({event["id"] for event in events}) != len(events):
+            violations.append(f"duplicate shipment event {order_id}")
         times = [datetime.fromisoformat(event["occurred_at"]) for event in events]
         if times != sorted(times) or times[0] < datetime.fromisoformat(order["placed_at"]):
             violations.append(f"event time mismatch {order_id}")

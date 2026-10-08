@@ -81,11 +81,14 @@ def _item_refund_balanced(db: Session, item: m.OrderItem) -> bool:
     if allocation is None or allocation.paid_cents != item.paid_cents:
         return False
     issued = []
+    seen_returns = set()
     for entry in item_ledgers:
         proposal = db.get(m.RefundProposal, entry.proposal_id)
         request = db.get(m.ReturnRequest, proposal.return_id) if proposal else None
-        if request is None or request.order_item_id != item.id or entry.issued_at is None:
+        if (request is None or request.order_item_id != item.id or entry.issued_at is None
+                or request.id in seen_returns):
             return False
+        seen_returns.add(request.id)
         issued.append((proposal.order_version, aware(entry.issued_at), entry.id, entry, request))
     item_refunded_quantity = 0
     expected_cents = 0

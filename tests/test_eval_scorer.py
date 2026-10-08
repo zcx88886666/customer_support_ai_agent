@@ -262,6 +262,49 @@ def test_scorer_accepts_two_ledger_partial_refund_balance(db):
     assert business_checks["amount"]
 
 
+def test_scorer_rejects_two_ledgers_for_the_same_return(db):
+    request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 1,
+                              "scorer case", True, "scorer-duplicate-return", AT)
+    d.record_receipt(db, "warehouse-test", request.id, 1, AT + timedelta(hours=1))
+    inspection = d.record_inspection(db, "warehouse-test", request.id, True, "intact",
+                                     AT + timedelta(hours=2))
+    first = d.create_proposal(db, request.id, AT + timedelta(hours=3))
+    d.decide_proposal(db, "supervisor-test", first.id, True, AT + timedelta(hours=4))
+    d.issue_refund(db, first.id, f"refund:{first.id}", AT + timedelta(hours=5))
+    order = db.get(m.Order, "demo-order-03")
+    item = db.get(m.OrderItem, "demo-item-03")
+    second = m.RefundProposal(return_id=request.id, inspection_id=inspection.id,
+                              order_version=order.version, plan_revision=request.plan_revision,
+                              policy_bundle_id=request.policy_bundle_id, amount_cents=351,
+                              status="issued", created_at=AT + timedelta(hours=6))
+    db.add(second)
+    db.flush()
+    db.add(m.Approval(proposal_id=second.id, actor_id="supervisor-test", decision="approved",
+                      decided_at=AT + timedelta(hours=7)))
+    second_ledger = m.RefundLedger(proposal_id=second.id, order_item_id=item.id,
+                                   amount_cents=351, idempotency_key=f"refund:{second.id}",
+                                   issued_at=AT + timedelta(hours=8))
+    db.add(second_ledger)
+    item.refunded_quantity += 1
+    item.refunded_cents += 351
+    order.version += 1
+    db.flush()
+    db.add(m.AuditEvent(actor_id="supervisor-test", action="approved", entity_type="proposal",
+                        entity_id=second.id, policy_bundle_id=second.policy_bundle_id))
+    db.add(m.AuditEvent(actor_id="refund_worker", action="issue_refund", entity_type="proposal",
+                        entity_id=second.id, before_version=second.order_version,
+                        after_version=second.order_version + 1, policy_bundle_id=second.policy_bundle_id,
+                        idempotency_key=second_ledger.idempotency_key,
+                        details={"ledger_id": second_ledger.id, "amount_cents": 351}))
+    db.flush()
+    gold = {"fixture": {"customer_id": "cust-01", "order_id": "demo-order-03"},
+            "gold": {"ledger_count": 2, "return_count": 1}}
+    payload = {"status": "answered", "answer": "模拟退款已执行", "return_id": request.id}
+    checks, _ = score_case(gold, payload, 200, db)
+    assert not checks["refund_authorized"]
+    assert not checks["refund_balance"]
+
+
 def test_scorer_rejects_approval_recorded_after_refund(db):
     request = d.create_return(db, "cust-01", "demo-order-01", "demo-item-01", 1,
                               "scorer case", True, "scorer-late-approval", AT)

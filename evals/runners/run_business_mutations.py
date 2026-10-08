@@ -34,6 +34,9 @@ MUTANTS = (
     ("review_audit_wrong_actor", "core-chat-expired-window"),
     ("review_ticket_wrong_order", "core-chat-expired-window"),
     ("approval_timestamp_after_refund", "approved_refund"),
+    ("receipt_before_return", "approved_refund"),
+    ("inspection_before_receipt", "approved_refund"),
+    ("proposal_before_inspection", "approved_refund"),
     ("approval_before_proposal", "approved_refund"),
     ("approval_audit_wrong_actor", "approved_refund"),
     ("refund_audit_wrong_version", "approved_refund"),
@@ -98,6 +101,41 @@ def inject(name: str):
             return original(db, actor, proposal_id, approve, proposal.created_at - timedelta(hours=1))
 
         with patch.object(d, "decide_proposal", changed):
+            yield
+        return
+    if name == "receipt_before_return":
+        original = d.record_receipt
+
+        def changed(db, actor, return_id, quantity, at):
+            receipt = original(db, actor, return_id, quantity, at)
+            receipt.received_at = d.aware(db.get(m.ReturnRequest, return_id).created_at) - timedelta(hours=1)
+            return receipt
+
+        with patch.object(d, "record_receipt", changed):
+            yield
+        return
+    if name == "inspection_before_receipt":
+        original = d.record_inspection
+
+        def changed(db, actor, return_id, passed, note, at):
+            inspection = original(db, actor, return_id, passed, note, at)
+            receipt = db.get(m.WarehouseReceipt, inspection.receipt_id)
+            inspection.inspected_at = d.aware(receipt.received_at) - timedelta(hours=1)
+            return inspection
+
+        with patch.object(d, "record_inspection", changed):
+            yield
+        return
+    if name == "proposal_before_inspection":
+        original = d.create_proposal
+
+        def changed(db, return_id, at):
+            proposal = original(db, return_id, at)
+            inspection = db.get(m.Inspection, proposal.inspection_id)
+            proposal.created_at = d.aware(inspection.inspected_at) - timedelta(hours=1)
+            return proposal
+
+        with patch.object(d, "create_proposal", changed):
             yield
         return
     if name == "approval_audit_wrong_actor":

@@ -3,7 +3,7 @@ from evals.runners.run_business_mutations import run_mutants
 
 def test_targeted_business_mutations_are_detected():
     result = run_mutants()
-    assert result["counts"] == {"killed": 18, "survived": 0, "invalid": 0}
+    assert result["counts"] == {"killed": 21, "survived": 0, "invalid": 0}
     assert result["mutation_score"] == 1.0
     review_cases = {row["mutation"]: row for row in result["results"]
                     if row["mutation"].startswith("review_")}
@@ -15,6 +15,9 @@ def test_targeted_business_mutations_are_detected():
     early_approval = next(row for row in result["results"]
                           if row["mutation"] == "approval_before_proposal")
     assert "refund_authorized" in early_approval["failed_checks"]
+    for mutation in ("receipt_before_return", "inspection_before_receipt", "proposal_before_inspection"):
+        row = next(row for row in result["results"] if row["mutation"] == mutation)
+        assert "refund_authorized" in row["failed_checks"]
     wrong_approver_audit = next(row for row in result["results"]
                                 if row["mutation"] == "approval_audit_wrong_actor")
     assert "refund_authorized" in wrong_approver_audit["failed_checks"]

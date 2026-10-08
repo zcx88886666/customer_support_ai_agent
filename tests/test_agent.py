@@ -21,6 +21,27 @@ def test_composite_dispatch_and_unreceived_limit(db):
     assert {finding["source_version"] for finding in result["findings"]} == {"1", "policy-demo-v1"}
 
 
+@pytest.mark.parametrize("order_id,shipment_status,has_delivery", [
+    ("demo-order-01", "delivered", False),
+    ("demo-order-02", "in_transit", True),
+])
+@pytest.mark.parametrize("mode", ["single", "collab"])
+def test_conflicting_shipment_status_and_delivery_time_hands_off(
+        db, order_id, shipment_status, has_delivery, mode):
+    shipment = db.query(m.Shipment).filter(m.Shipment.order_id == order_id).one()
+    shipment.status = shipment_status
+    shipment.delivered_at = (datetime.now(timezone.utc) - timedelta(days=2)) if has_delivery else None
+    db.flush()
+    result = run_chat(db, "cust-01", ChatInput(thread_id=f"shipment-conflict-{order_id}-{mode}",
+                                               message="包裹没到能退吗", order_id=order_id,
+                                               agent_mode=mode))
+    assert result["status"] == "handoff"
+    assert result["replan_count"] == 2
+    assert result["findings"] == []
+    assert db.get(m.Ticket, result["ticket_id"]).customer_id == "cust-01"
+    assert db.query(m.ReturnRequest).count() == db.query(m.RefundLedger).count() == 0
+
+
 def test_undelivered_answer_uses_current_policy_window_without_seven_day_claim(db):
     bundle = create_draft(db, "support-1", "policy-eight-day-composite", 8,
                           [{"id": "policy-eight-day-composite:window", "title": "退货政策",

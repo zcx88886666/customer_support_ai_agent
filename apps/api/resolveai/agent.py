@@ -296,6 +296,13 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["order_evidence_missing"], tool_calls=len(tools))
         else:
             try:
+                if shipment and ((shipment["status"] == "delivered" and not shipment.get("delivered_at"))
+                                 or (shipment["status"] in {"in_transit", "shipped"}
+                                     and shipment.get("delivered_at") is not None)):
+                    finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision,
+                                                status="conflict", queried_at=datetime.now(timezone.utc),
+                                                unresolved=["shipment_delivery_conflict"], tool_calls=len(tools))
+                    return {"finding": finding.model_dump(mode="json")}
                 facts = {"order_status": order["status"], "shipment_status": shipment["status"] if shipment else None,
                          "delivered_at": shipment.get("delivered_at") if shipment else None}
                 evidence = [(order["id"], {"order_status": facts["order_status"]})]

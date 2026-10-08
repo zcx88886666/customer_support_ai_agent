@@ -1,8 +1,10 @@
 # ResolveAI implementation status
 
-> Verified through 2026-10-07 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
+> Verified through 2026-10-08 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
 
 ## Current snapshot
+
+- [Shipment status/time conflict handling](implementation/shipment-timestamp-conflict-2026-10-07.md) now marks `delivered` without a delivery time, or `in_transit`/`shipped` with one, as conflicting order evidence before answer assembly. Four single/collaborative Agent regressions went red→green and now hand off after two bounded replans with no return or refund. The Agent file passed **43/43**, and the no-key minimum passed **7/7** with **347 Python tests and five optional skips**. The local Docker API was rebuilt and returned `{"status":"ok"}` from its health endpoint. Read-only review found no Critical/Important issue. Broader source conflicts and free-form synthesis remain open; the locked release gate is false.
 
 - [Refund balance reconciliation](implementation/refund-balance-scorer-2026-10-07.md) now makes smoke and direct business scorers compare every isolated item’s refunded cents and quantity with ledger-backed returns, including zero-ledger and cross-order side effects. A valid two-ledger partial refund still passes. Three new named faults fail the intended balance check, bringing the targeted campaign to **17 killed, zero survived, zero invalid**. Focused tests passed **15/15**; the final no-key minimum passed **7/7** with **343 Python tests and five optional skips**. Review found no remaining Critical/Important issue. Independent human gold and the locked release gate remain open.
 

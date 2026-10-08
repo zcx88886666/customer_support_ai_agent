@@ -306,6 +306,15 @@ def test_refund_word_does_not_create_return_submission_intent(monkeypatch):
     assert classify("我要退货并退款").intents == ["return_request", "refund_request"]
 
 
+def test_explicit_order_switch_return_intent_is_not_order_status(monkeypatch):
+    from resolveai import agent
+
+    monkeypatch.setattr(agent, "model_configured", lambda: False)
+    decision = classify("我要改为退订单 demo-order-01 的商品")
+    assert decision.route == "after_sales"
+    assert "return_request" in decision.intents
+
+
 def test_model_read_only_and_high_risk_routes_are_normalized(monkeypatch):
     from resolveai import agent
     from resolveai.schemas import RouteDecision

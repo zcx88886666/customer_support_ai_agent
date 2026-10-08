@@ -55,7 +55,8 @@ class SpecialistState(TypedDict, total=False):
 
 def classify(text: str) -> RouteDecision:
     lower = text.lower()
-    return_action = any(term in lower for term in ("申请退货", "我要退货", "我要退这", "提交退货", "return request"))
+    return_action = any(term in lower for term in ("申请退货", "我要退货", "我要退这", "提交退货",
+                                                "改为退订单", "改成退订单", "return request"))
     policy_question = any(term in lower for term in ("政策", "规则", "七天", "七日", "policy", "eligible"))
     shipment_question = any(term in lower for term in ("包裹", "物流", "配送", "shipment", "delivery"))
     high_risk_word = any(term in lower for term in ("退款", "refund", "取消", "cancel", "投诉", "complaint"))

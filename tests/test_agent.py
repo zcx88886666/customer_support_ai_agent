@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from langgraph.checkpoint.memory import MemorySaver
@@ -481,6 +482,31 @@ def test_order_finding_validator_rejects_matching_but_contradictory_snapshot(
                                 source_ids=[order_id, shipment.id], source_version=str(order.version),
                                 queried_at=datetime.now(timezone.utc))
     assert not validate_finding(db, "cust-01", task, finding, 1)
+
+
+def test_foreign_mcp_shipment_is_rejected_before_model_evidence_review(db, monkeypatch):
+    from resolveai import agent
+
+    foreign = db.get(m.Shipment, "demo-shipment-05")
+    assert db.get(m.Order, foreign.order_id).customer_id == "cust-02"
+    monkeypatch.setattr(agent, "settings", replace(agent.settings, auth_mode="oidc"))
+    monkeypatch.setattr(agent, "read_order", lambda *_args: (
+        {"id": "demo-order-01", "status": "paid", "version": 1,
+         "items": [{"id": "demo-item-01", "quantity": 1}]},
+        [{"id": foreign.id, "status": foreign.status,
+          "delivered_at": foreign.delivered_at.isoformat(), "version": foreign.version}]))
+    reviewed = []
+    monkeypatch.setattr(agent, "review_evidence", lambda *_args: reviewed.append(True) or [])
+    task = DelegationTask(task_id="mcp-foreign-shipment", thread_id="thread", plan_revision=1,
+                          specialist="order", question_scope="查物流", verified_order_ref="demo-order-01",
+                          deadline=datetime.now(timezone.utc) + timedelta(seconds=10))
+
+    finding = SpecialistFinding.model_validate(agent.build_order_graph(db, "cust-01", "synthetic-token")
+                                               .invoke({"task": task.model_dump(mode="json")})["finding"])
+
+    assert finding.status == "conflict"
+    assert finding.facts == {} and finding.source_ids == []
+    assert reviewed == []
 
 
 @pytest.mark.parametrize("mode", ["single", "collab"])

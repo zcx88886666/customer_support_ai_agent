@@ -342,6 +342,14 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["order_evidence_missing"], tool_calls=len(tools))
         else:
             try:
+                if shipment:
+                    with read_lock:
+                        owned_shipment = db.get(m.Shipment, shipment["id"])
+                    if owned_shipment is None or owned_shipment.order_id != task.verified_order_ref:
+                        finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision,
+                                                    status="conflict", queried_at=datetime.now(timezone.utc),
+                                                    unresolved=["shipment_source_mismatch"], tool_calls=len(tools))
+                        return {"finding": finding.model_dump(mode="json")}
                 if shipment and _shipment_delivery_conflict(shipment["status"], shipment.get("delivered_at")):
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision,
                                                 status="conflict", queried_at=datetime.now(timezone.utc),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import select
 
 from resolveai import domain as d, models as m
@@ -77,6 +78,27 @@ def test_scorer_compares_delivery_instants_across_timezone_formats(db):
     assert checks["evidence_owned_and_current"]
     valid["facts"]["delivered_at"] = (d.aware(shipment.delivered_at) + timedelta(hours=1)).isoformat()
     checks, _ = score_case(case({"ledger_count": 0}), {"status": "answered", "answer": "", "findings": [valid]}, 200, db)
+    assert not checks["evidence_owned_and_current"]
+
+
+@pytest.mark.parametrize("order_id,status,has_delivery", [
+    ("demo-order-01", "delivered", False),
+    ("demo-order-02", "in_transit", True),
+])
+def test_scorer_rejects_db_matching_shipment_status_time_conflict(
+        db, order_id, status, has_delivery):
+    order = db.get(m.Order, order_id)
+    shipment = db.query(m.Shipment).filter(m.Shipment.order_id == order_id).one()
+    shipment.status = status
+    shipment.delivered_at = AT if has_delivery else None
+    db.flush()
+    finding = {"status": "ok", "source_version": str(order.version),
+               "source_ids": [order_id, shipment.id],
+               "facts": {"order_status": order.status, "shipment_status": status,
+                         "delivered_at": shipment.delivered_at.isoformat() if has_delivery else None}}
+    checks, _ = score_case(
+        {"fixture": {"customer_id": "cust-01", "order_id": order_id}, "gold": {"ledger_count": 0}},
+        {"status": "answered", "answer": "", "findings": [finding]}, 200, db)
     assert not checks["evidence_owned_and_current"]
 
 

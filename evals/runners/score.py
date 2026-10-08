@@ -162,6 +162,10 @@ def _finding_valid(db: Session, fixture: dict, finding: dict, *, status_only: bo
     shipment = db.get(m.Shipment, ids[1])
     if not order or order.customer_id != fixture["customer_id"] or not shipment or shipment.order_id != order.id or source_version != str(order.version):
         return False
+    # Keep this scorer rule independent of the runtime specialist and validator.
+    if ((shipment.status == "delivered" and shipment.delivered_at is None)
+            or (shipment.status in {"in_transit", "shipped"} and shipment.delivered_at is not None)):
+        return False
     facts = finding.get("facts") or {}
     if set(facts) != {"order_status", "shipment_status", "delivered_at"} or facts["order_status"] != order.status or facts["shipment_status"] != shipment.status:
         return False

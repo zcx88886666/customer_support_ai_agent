@@ -171,6 +171,11 @@ def review_evidence(task_name: str, question: str, evidence: list[tuple[str, dic
     return [aliases[ref] for ref in refs]
 
 
+def _shipment_delivery_conflict(status: str, delivered_at: object) -> bool:
+    return (status == "delivered" and not delivered_at) or (
+        status in {"in_transit", "shipped"} and delivered_at is not None)
+
+
 def validate_finding(db: Session, customer_id: str, task: DelegationTask, finding: SpecialistFinding, current_revision: int) -> bool:
     if finding.task_id != task.task_id or finding.plan_revision != current_revision or task.plan_revision != current_revision or finding.status != "ok":
         return False
@@ -205,6 +210,8 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
         shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
         shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
         if shipment is None or finding.source_version != str(order.version) or finding.source_ids != [order.id, shipment.id]:
+            return False
+        if _shipment_delivery_conflict(shipment.status, shipment.delivered_at):
             return False
         reported_delivery = finding.facts.get("delivered_at")
         if shipment.delivered_at is None:
@@ -296,9 +303,7 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["order_evidence_missing"], tool_calls=len(tools))
         else:
             try:
-                if shipment and ((shipment["status"] == "delivered" and not shipment.get("delivered_at"))
-                                 or (shipment["status"] in {"in_transit", "shipped"}
-                                     and shipment.get("delivered_at") is not None)):
+                if shipment and _shipment_delivery_conflict(shipment["status"], shipment.get("delivered_at")):
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision,
                                                 status="conflict", queried_at=datetime.now(timezone.utc),
                                                 unresolved=["shipment_delivery_conflict"], tool_calls=len(tools))

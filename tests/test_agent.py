@@ -452,6 +452,28 @@ def test_forged_and_late_specialist_findings_rejected(db):
     assert not validate_finding(db, "cust-01", task, good.model_copy(update={"model_reviewed": True, "reviewed_source_ids": ["other-customer-order"]}), 2)
 
 
+@pytest.mark.parametrize("order_id,status,has_delivery", [
+    ("demo-order-01", "delivered", False),
+    ("demo-order-02", "in_transit", True),
+])
+def test_order_finding_validator_rejects_matching_but_contradictory_snapshot(
+        db, order_id, status, has_delivery):
+    shipment = db.query(m.Shipment).filter(m.Shipment.order_id == order_id).one()
+    shipment.status = status
+    shipment.delivered_at = (datetime.now(timezone.utc) - timedelta(days=2)) if has_delivery else None
+    db.flush()
+    order = db.get(m.Order, order_id)
+    task = DelegationTask(task_id="conflicting-order", thread_id="thread", plan_revision=1,
+                          specialist="order", question_scope="包裹", verified_order_ref=order_id,
+                          deadline=datetime.now(timezone.utc) + timedelta(seconds=10))
+    finding = SpecialistFinding(task_id=task.task_id, plan_revision=1, status="ok",
+                                facts={"order_status": order.status, "shipment_status": status,
+                                       "delivered_at": shipment.delivered_at.isoformat() if shipment.delivered_at else None},
+                                source_ids=[order_id, shipment.id], source_version=str(order.version),
+                                queried_at=datetime.now(timezone.utc))
+    assert not validate_finding(db, "cust-01", task, finding, 1)
+
+
 @pytest.mark.parametrize("mode", ["single", "collab"])
 def test_forged_specialist_facts_do_not_leave_public_response(db, monkeypatch, mode):
     from resolveai import agent

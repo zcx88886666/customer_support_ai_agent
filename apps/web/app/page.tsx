@@ -16,6 +16,7 @@ type TicketDetail = Ticket & { messages: { id: string; actor_type: string; body:
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 const authMode = process.env.NEXT_PUBLIC_AUTH_MODE || "mock";
+const uncertainReturnNotice = "提交结果未确认。请在当前页面重试；系统会使用同一请求编号避免重复申请。";
 class StaleRequest extends Error {}
 
 export default function Home() {
@@ -117,6 +118,11 @@ export default function Home() {
     if (!(error instanceof StaleRequest)) setNotice(String(error));
   }
 
+  function showReturnSubmissionError(error: unknown) {
+    if (error instanceof TypeError) setNotice(uncertainReturnNotice);
+    else showError(error);
+  }
+
   function invalidateReturnForm() {
     returnFormVersion.current += 1;
     setReturnId("");
@@ -169,7 +175,7 @@ export default function Home() {
         if (value.ticket_id) await loadTickets(null, ticketStatusRef.current, false);
         if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) setNotice(value.ticket_id ? `已转人工，工单 ${value.ticket_id}。请在“我的工单”查看进度。` : value.answer || value.status);
       }
-    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showError(error); }
+    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showReturnSubmissionError(error); }
   }
   async function submitReturn() {
     if (!confirmed || !returnItem) return;
@@ -187,7 +193,7 @@ export default function Home() {
       } else {
         setReturnId(value.id); setNotice(`申请已提交：${value.id}，尚未退款`);
       }
-    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showError(error); }
+    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showReturnSubmissionError(error); }
   }
   async function requestReturnReview() {
     if (!confirmed || !returnItem) return;
@@ -201,7 +207,7 @@ export default function Home() {
       setReturnId("");
       await loadTickets(null, ticketStatusRef.current, false);
       if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) setNotice(`已提交人工复核工单 ${value.ticket_id}；尚未建立退货申请或退款。`);
-    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showError(error); }
+    } catch (error) { if (identityGeneration.current === requestedGeneration && returnFormVersion.current === requestedFormVersion) showReturnSubmissionError(error); }
   }
   async function warehouse(path: string, body: object) {
     try {
@@ -277,7 +283,7 @@ export default function Home() {
     <h1>ResolveAI 售后演示</h1>
     <p className="muted">所有订单与退款均为合成模拟。客户申请、仓库质检和主管审批分步执行。</p>
     {authMode === "oidc" ? <p><button disabled={!keycloak || !!token} onClick={() => keycloak?.login()}>Keycloak 登录</button><button className="secondary" disabled={!keycloak || !token} onClick={() => keycloak?.logout()}>退出</button>{token ? "已登录" : "未登录"}</p> : <div className="card"><strong>本机 Mock 身份</strong><label>角色<select value={role} onChange={(e) => setRole(e.target.value as Role)}><option value="customer">customer</option><option value="support">support</option><option value="warehouse">warehouse</option><option value="supervisor">supervisor</option></select></label><label>演示 Actor<input value={actor} onChange={(e) => setActor(e.target.value)} /></label></div>}
-    {notice && <p className={notice.includes("Error") ? "error" : "success"}>{notice}</p>}
+    {notice && <p className={notice.includes("Error") || notice === uncertainReturnNotice ? "error" : "success"}>{notice}</p>}
     <div className="grid">
       {(role === "customer" || role === "support" || role === "supervisor") && <section className="card">
         <h2>{role === "customer" ? "我的工单" : role === "support" ? "已分配工单" : "人工工单分配"}</h2>

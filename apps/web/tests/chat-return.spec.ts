@@ -6,6 +6,51 @@ const cors = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
 };
 
+test("a lost return response keeps the request key for a safe browser retry", async ({ page }) => {
+  test.skip(process.env.CHAT_RETURN_UI_TEST !== "1", "Run with a temporary mock-mode web server on port 3001");
+  const submitted: Array<Record<string, unknown>> = [];
+  let committedReturns = 0;
+  await page.route("http://localhost:8000/**", async (route) => {
+    const request = route.request();
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: cors });
+      return;
+    }
+    const path = new URL(request.url()).pathname;
+    if (path === "/orders/demo-order-01") {
+      await route.fulfill({ status: 200, contentType: "application/json", headers: cors,
+        body: JSON.stringify({ id: "demo-order-01", items: [{ id: "demo-item-01", quantity: 1, paid_cents: 1018 }] }) });
+    } else if (path === "/orders/demo-order-01/shipments") {
+      await route.fulfill({ status: 200, contentType: "application/json", headers: cors, body: "[]" });
+    } else if (path === "/returns" && request.method() === "POST") {
+      submitted.push(request.postDataJSON());
+      if (submitted.length === 1) {
+        committedReturns += 1;
+        await route.abort("failed");
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", headers: cors,
+          body: JSON.stringify({ id: "return-after-lost-response" }) });
+      }
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", headers: cors, body: "{}" });
+    }
+  });
+
+  await page.goto("http://localhost:3001/");
+  await page.getByRole("button", { name: "查看商品" }).click();
+  await page.getByRole("checkbox", { name: /我确认订单/ }).check();
+  const submit = page.getByRole("button", { name: "提交退货", exact: true });
+  await submit.click();
+  await expect(page.getByText("提交结果未确认。请在当前页面重试；系统会使用同一请求编号避免重复申请。")).toBeVisible();
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(page.getByText("申请已提交：return-after-lost-response，尚未退款")).toBeVisible();
+  expect(submitted).toHaveLength(2);
+  expect(submitted[0].idempotency_key).toBeTruthy();
+  expect(submitted[1].idempotency_key).toBe(submitted[0].idempotency_key);
+  expect(committedReturns).toBe(1);
+});
+
 test("confirmed Agent return submission reuses its key and shows the owned review ticket", async ({ page }) => {
   test.skip(process.env.CHAT_RETURN_UI_TEST !== "1", "Run with a temporary mock-mode web server on port 3001");
   const submitted: Array<Record<string, unknown>> = [];

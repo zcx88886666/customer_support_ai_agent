@@ -129,6 +129,10 @@ def _ledger_authorized(db: Session, ledger: m.RefundLedger) -> bool:
             and approval_audits[0].entity_type == "proposal"
             and approval_audits[0].actor_id == approval.actor_id
             and len(refund_audits) == 1
+            and refund_audits[0].actor_id == "refund_worker"
+            and refund_audits[0].entity_type == "proposal"
+            and refund_audits[0].policy_bundle_id == proposal.policy_bundle_id
+            and refund_audits[0].idempotency_key == ledger.idempotency_key
             and refund_audits[0].before_version == proposal.order_version
             and refund_audits[0].after_version == proposal.order_version + 1
             and refund_audits[0].details.get("ledger_id") == ledger.id

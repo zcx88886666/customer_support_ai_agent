@@ -55,6 +55,14 @@ def _mutations() -> list[dict]:
          "field": "order_item_id", "value": "demo-item-02", "expected_check": "refund_authorized"},
         {"name": "request_customer_foreign", "kind": "replace", "target": "request",
          "field": "customer_id", "value": "cust-02", "expected_check": "ledger_owned"},
+        {"name": "refund_audit_actor_foreign", "kind": "replace", "target": "refund_audit",
+         "field": "actor_id", "value": "cust-02", "expected_check": "refund_authorized"},
+        {"name": "refund_audit_entity_wrong", "kind": "replace", "target": "refund_audit",
+         "field": "entity_type", "value": "return", "expected_check": "refund_authorized"},
+        {"name": "refund_audit_bundle_wrong", "kind": "replace", "target": "refund_audit",
+         "field": "policy_bundle_id", "value": "policy-other", "expected_check": "refund_authorized"},
+        {"name": "refund_audit_key_wrong", "kind": "replace", "target": "refund_audit",
+         "field": "idempotency_key", "value": "refund:wrong", "expected_check": "refund_authorized"},
     ))
     return result
 

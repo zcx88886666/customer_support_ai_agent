@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import TypedDict
+from typing import Callable, TypedDict
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -121,6 +121,38 @@ def docker_stream(server: DisposablePostgres, command: list[str], archive: Path,
         raise DockerFailure("exec", "restore_failed" if restore else "dump_failed", result.returncode)
 
 
+def restore_guarded(archive: Path, expected_sha256: str, restore: Callable[[], None]) -> None:
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != expected_sha256:
+        raise ValueError("Archive hash mismatch")
+    restore()
+
+
+def probe_damaged_archive(
+        target: DisposablePostgres, target_url: str, archive: Path,
+        restore_command: list[str], stage_dir: Path) -> dict[str, bool]:
+    """Prove a truncated archive cannot leave a usable partial restore."""
+    data = archive.read_bytes()
+    if len(data) < 32:
+        raise ValueError("Archive too small for damage probe")
+    damaged = stage_dir / "database.truncated.dump"
+    descriptor = os.open(damaged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as target_file:
+        target_file.write(data[:len(data) // 2])
+    try:
+        docker_stream(target, restore_command, damaged, restore=True,
+                      log_path=stage_dir / "truncated-restore.log")
+    except DockerFailure:
+        rejected = True
+    else:
+        rejected = False
+    with psycopg.connect(target_url, options="-c statement_timeout=10000") as connection:
+        table_count = connection.execute(
+            "SELECT count(*) FROM pg_tables WHERE schemaname='public'").fetchone()[0]
+    return {"damaged_archive_rejected": rejected,
+            "damaged_restore_left_no_tables": table_count == 0,
+            "damaged_archive_is_private_0600": stat.S_IMODE(damaged.stat().st_mode) == 0o600}
+
+
 def replay_restored_business(url: str, stage: str, report_dir: Path) -> list[dict]:
     env = {**os.environ, "DATABASE_URL": url.replace("postgresql://", "postgresql+psycopg://", 1),
            "AUTH_MODE": "mock", "LONG_TERM_MEMORY_MODE": "off", "OPENROUTER_API_KEY": "",
@@ -173,18 +205,28 @@ def verify_case(stage: str, source: DisposablePostgres, target: DisposablePostgr
         target.owned()
         with psycopg.connect(target.admin_url, autocommit=True) as connection:
             connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+        restore_command = ["pg_restore", "--single-transaction", "--exit-on-error", "--no-owner",
+                           "--no-acl", "--username=resolveai", "--dbname=" + database]
+        checks.update(probe_damaged_archive(target, target_url, archive, restore_command, stage_dir))
+        if not all(checks.values()):
+            row["status"] = "fail"
+            return row
         started = time.monotonic()
-        docker_stream(target, ["pg_restore", "--single-transaction", "--exit-on-error", "--no-owner", "--no-acl",
-                               "--username=resolveai", "--dbname=" + database], archive, restore=True, log_path=stage_dir / "restore.log")
+        restore_guarded(archive, row["archive"]["sha256"],
+                        lambda: docker_stream(target, restore_command, archive, restore=True,
+                                              log_path=stage_dir / "restore.log"))
         row["restore_seconds"] = round(time.monotonic() - started, 4)
         after = snapshot_database(target_url)
         (stage_dir / "restored-snapshot.json").write_text(json.dumps(after, indent=2) + "\n")
         checks.update(restore_checks(before, after))
+        checks["archive_hash_unchanged"] = hashlib.sha256(archive.read_bytes()).hexdigest() == row["archive"]["sha256"]
+        if not all(checks.values()):
+            row["status"] = "fail"
+            return row
         checks["fresh_checkpointer_reads_restored_state"] = checkpoint_roundtrip(target_url, stage, create=False)
         replay = replay_restored_business(target_url, stage, stage_dir)
         checks["restored_business_replay_is_idempotent"] = (replay[0] == replay[1] if stage == "return" else replay == [{"issued": []}, {"issued": []}])
         checks["business_replay_preserves_all_records"] = snapshot_database(target_url) == after
-        checks["archive_hash_unchanged"] = hashlib.sha256(archive.read_bytes()).hexdigest() == row["archive"]["sha256"]
         row["table_count"] = len(after["tables"])
         row["status"] = "pass" if all(checks.values()) else "fail"
     except Exception as exc:
@@ -203,7 +245,7 @@ def main() -> int:
     target.report_dir.mkdir()
     rows, cleanup = [], {}
     error_type = None
-    manifest = {"run_id": run_id, "suite": "postgres-backup-restore-v1", "split": "dev", "synthetic": True, "case_count": 2,
+    manifest = {"run_id": run_id, "suite": "postgres-backup-restore-v2", "split": "dev", "synthetic": True, "case_count": 2,
                 "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "verifier_hashes": {name: hashlib.sha256((ROOT / "scripts" / name).read_bytes()).hexdigest() for name in (
                     "verify_postgres_backup_restore.py", "verify_postgres_server_crash.py", "verify_transaction_kill_postgres.py")},

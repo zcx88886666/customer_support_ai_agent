@@ -1,0 +1,9 @@
+# Truncated PostgreSQL archive drill — 2026-10-07
+
+The local backup verifier now checks the dump SHA-256 immediately before restoring. A changed archive is rejected before the restore action. For each of its two synthetic business states, the verifier writes a private half-length copy of the archive and attempts a `pg_restore --single-transaction --exit-on-error` into the isolated target database. It requires the restore to fail and the target to contain no public tables before using the intact archive. After the intact restore, it checks data, schema, checkpoints, replay idempotency and the archive hash before treating the restored state as usable.
+
+The archive guard test failed when the function was absent, then passed. The focused backup test file passed **13 tests with one optional PostgreSQL skip**. A real two-server Docker run `20261008T065816Z-backup-restore-10d413` passed **2/2 cases and 71/71 checks**. Both truncated attempts reported `could not read from input file: end of file`; both target databases had zero public tables afterward. The intact archives then restored and passed the existing business checks. Both owned containers and volumes were removed.
+
+After labeling the expanded verifier `postgres-backup-restore-v2`, the final disposable run `20261008T065929Z-backup-restore-f33093` passed **2/2 cases and 71/71 checks** and removed both servers and volumes. The full no-key minimum run `20261008T065945Z-minimum-f9c8c1` passed **7/7** suites with **358 Python tests, five optional skips and nine Alembic warnings**.
+
+This is a synthetic local archive-damage and intact-copy fallback drill. It does not prove recovery from a failed physical disk, a corrupted historical backup set, or an archive on another offline medium. The locked release gate remains false. No model or Langfuse call was made.

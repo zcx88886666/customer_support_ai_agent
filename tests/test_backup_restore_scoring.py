@@ -1,6 +1,7 @@
 """Equal counts alone cannot prove that restored business facts survived."""
 
 from copy import deepcopy
+import hashlib
 import os
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -9,6 +10,7 @@ import psycopg
 from psycopg import sql
 import pytest
 
+from scripts import verify_postgres_backup_restore as backup_restore
 from scripts.verify_postgres_backup_restore import restore_checks, snapshot_database, canonical_json_row
 
 
@@ -63,6 +65,20 @@ def test_distinct_high_precision_json_numbers_have_distinct_hash_inputs():
     right = canonical_json_row('{"amount":1.00000000000000002}')
     assert left != right
     assert left != canonical_json_row('{"amount":"1.00000000000000001"}')
+
+
+def test_changed_archive_is_rejected_before_restore_action(tmp_path):
+    archive = tmp_path / "database.dump"
+    archive.write_bytes(b"original synthetic archive")
+    expected = hashlib.sha256(archive.read_bytes()).hexdigest()
+    archive.write_bytes(b"damaged synthetic archive")
+    actions = []
+    with pytest.raises(ValueError, match="Archive hash mismatch"):
+        backup_restore.restore_guarded(archive, expected, lambda: actions.append("restore"))
+    assert actions == []
+    archive.write_bytes(b"original synthetic archive")
+    backup_restore.restore_guarded(archive, expected, lambda: actions.append("restore"))
+    assert actions == ["restore"]
 
 
 @pytest.mark.skipif(not os.environ.get("BACKUP_SCHEMA_PG_ADMIN_URL"), reason="requires disposable PostgreSQL schema database")

@@ -159,6 +159,9 @@ def score_chat_phase(case: dict, chat_rows: list[dict], chat_return_ids: list[st
             ):
                 if field in expected:
                     checks[f"turn_{index}_{field}"] = actual == expected[field]
+            if "answer_contains" in expected:
+                checks[f"turn_{index}_answer_contains"] = all(
+                    fragment in row["payload"].get("answer", "") for fragment in expected["answer_contains"])
     return checks
 
 
@@ -241,7 +244,8 @@ def run_case(case: dict, run_id: str, seed_clock: datetime, *,
                 for turn in case["dialogue_script"]:
                     response = client.post(
                         "/chat",
-                        json={**turn, "thread_id": case["case_id"], "order_id": case["fixture"]["order_id"],
+                        json={**turn, "thread_id": case["case_id"],
+                              "order_id": turn.get("order_id", case["fixture"]["order_id"]),
                               "idempotency_key": case["case_id"], "agent_mode": "single"},
                         headers={"x-mock-actor": case["fixture"]["customer_id"], "x-mock-role": "customer",
                                  "x-eval-run-id": run_id, "x-eval-case-id": case["case_id"]},

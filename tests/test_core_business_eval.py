@@ -142,3 +142,13 @@ def test_core_chat_scorer_checks_ticket_count_at_each_turn():
            "ticket_ids": [], "return_count": 0, "ledger_count": 0}
     checks = run_core_business.score_chat_phase(case, [row], [], 0, {})
     assert checks["turn_0_ticket_count"] is False
+
+
+def test_core_chat_scorer_checks_requested_clarification_text():
+    case = next(case for case in run_core_business.load_cases() if case["case_id"] == "core-chat-unconfirmed-return")
+    case = {**case, "gold": {**case["gold"], "turn_gold": [{"answer_contains": ["商品项编号"]}]}}
+    row = {"http_status": 200, "payload": {"status": "clarify", "answer": "请明确确认提交。",
+                                            "route": {"route": "after_sales"}},
+           "ticket_ids": [], "return_count": 0, "ledger_count": 0}
+    checks = run_core_business.score_chat_phase(case, [row], [], 0, {})
+    assert checks["turn_0_answer_contains"] is False

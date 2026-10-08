@@ -179,7 +179,8 @@ def run_case(case: dict, run_id: str, index: int, admin_url: str, tokens: dict[s
                         for turn in case["dialogue_script"]:
                             chat_response = client.post(
                                 "/chat",
-                                json={**turn, "thread_id": case["case_id"], "order_id": case["fixture"]["order_id"],
+                                json={**turn, "thread_id": case["case_id"],
+                                      "order_id": turn.get("order_id", case["fixture"]["order_id"]),
                                       "idempotency_key": case["case_id"], "agent_mode": "single"},
                                 headers={"Authorization": "Bearer " + token_by_role["customer"],
                                          "x-eval-run-id": run_id, "x-eval-case-id": case["case_id"]},

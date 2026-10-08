@@ -31,6 +31,24 @@ else:
 DATASET = ROOT / "evals/datasets/business_workflows_v2.jsonl"
 
 
+def _cumulative_refund_amounts_correct(db, ledgers: list[m.RefundLedger]) -> bool:
+    for item_id in {ledger.order_item_id for ledger in ledgers}:
+        item = db.get(m.OrderItem, item_id)
+        if item is None:
+            return False
+        related = [ledger for ledger in ledgers if ledger.order_item_id == item_id]
+        quantity = 0
+        for ledger in related:
+            proposal = db.get(m.RefundProposal, ledger.proposal_id)
+            request = db.get(m.ReturnRequest, proposal.return_id) if proposal else None
+            if request is None or request.order_item_id != item_id:
+                return False
+            quantity += request.quantity
+        if quantity > item.quantity or sum(ledger.amount_cents for ledger in related) != item.paid_cents * quantity // item.quantity:
+            return False
+    return True
+
+
 def load_cases() -> list[dict]:
     cases = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines() if line.strip()]
     ids = [case["case_id"] for case in cases]
@@ -140,7 +158,7 @@ def score(case: dict, statuses: dict, observations: dict, db) -> dict[str, bool]
         checks["return_id"] = any(request.id == observations.get("return_id") for request in returns)
     if ledgers:
         checks["worker_issued_once"] = observations.get("worker_issued") == 1
-        checks["amount"] = all(ledger.amount_cents == db.get(m.OrderItem, ledger.order_item_id).paid_cents * db.get(m.ReturnRequest, db.get(m.RefundProposal, ledger.proposal_id).return_id).quantity // db.get(m.OrderItem, ledger.order_item_id).quantity for ledger in ledgers)
+        checks["amount"] = _cumulative_refund_amounts_correct(db, ledgers)
     else:
         checks["worker_issued_none"] = observations.get("worker_issued", 0) == 0
     return checks

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -179,6 +180,32 @@ def test_scorer_requires_item_refund_balance_to_match_ledgers(db):
     assert not score_case(gold, payload, 200, db)[0]["refund_authorized"]
 
 
+def test_scorer_rejects_coordinated_wrong_refund_amount(db):
+    request = d.create_return(db, "cust-01", "demo-order-03", "demo-item-03", 1,
+                              "scorer case", True, "scorer-coordinated-amount", AT)
+    d.record_receipt(db, "warehouse-test", request.id, 1, AT + timedelta(hours=1))
+    d.record_inspection(db, "warehouse-test", request.id, True, "intact", AT + timedelta(hours=2))
+    proposal = d.create_proposal(db, request.id, AT + timedelta(hours=3))
+    d.decide_proposal(db, "supervisor-test", proposal.id, True, AT + timedelta(hours=4))
+    ledger = d.issue_refund(db, proposal.id, f"refund:{proposal.id}", AT + timedelta(hours=5))
+    item = db.get(m.OrderItem, "demo-item-03")
+    refund_audit = db.scalar(select(m.AuditEvent).where(
+        m.AuditEvent.action == "issue_refund", m.AuditEvent.entity_id == proposal.id))
+    gold = {"fixture": {"customer_id": "cust-01", "order_id": "demo-order-03"},
+            "gold": {"ledger_count": 1, "return_count": 1}}
+    payload = {"status": "answered", "answer": "模拟退款已执行", "return_id": request.id}
+    assert all(score_case(gold, payload, 200, db)[0].values())
+
+    ledger.amount_cents += 1
+    proposal.amount_cents += 1
+    item.refunded_cents += 1
+    refund_audit.details = {**refund_audit.details, "amount_cents": ledger.amount_cents}
+    db.flush()
+    checks, _ = score_case(gold, payload, 200, db)
+    assert not checks["refund_authorized"]
+    assert not checks["refund_balance"]
+
+
 def test_scorer_rejects_refunded_balance_without_any_ledger(db):
     item = db.get(m.OrderItem, "demo-item-03")
     item.refunded_cents = 1
@@ -221,6 +248,18 @@ def test_scorer_accepts_two_ledger_partial_refund_balance(db):
     checks, ledger_count = score_case(gold, {"status": "answered", "answer": "模拟退款已执行",
                                              "return_id": first_return_id}, 200, db)
     assert ledger_count == 2 and all(checks.values())
+    from evals.runners.run_business import score as score_business
+
+    business_case = {"fixture": gold["fixture"], "scenario": "split_refund", "gold": {
+        "http_statuses": {}, "return_count": 2, "return_statuses": ["refund_issued", "refund_issued"],
+        "proposal_statuses": ["issued", "issued"], "approval_decisions": ["approved", "approved"],
+        "ledger_count": 2, "ticket_count": 0,
+        "order_version": db.get(m.Order, "demo-order-03").version,
+        "audit_actions": dict(Counter(event.action for event in db.scalars(select(m.AuditEvent))))}}
+    observations = {"return_id": first_return_id, "preapproval_issued": 0,
+                    "worker_replay_issued": 0, "worker_issued": 1}
+    business_checks = score_business(business_case, {}, observations, db)
+    assert business_checks["amount"]
 
 
 def test_scorer_rejects_approval_recorded_after_refund(db):

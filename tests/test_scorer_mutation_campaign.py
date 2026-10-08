@@ -8,8 +8,8 @@ def test_generated_scorer_mutations_are_killed_and_reported(tmp_path):
     result = run_scorer_mutations.run_campaign(folder)
 
     assert result["baseline_pass"] is True
-    assert result["mutants"] == 24
-    assert result["counts"] == {"killed": 24, "survived": 0, "invalid": 0}
+    assert result["mutants"] == 25
+    assert result["counts"] == {"killed": 25, "survived": 0, "invalid": 0}
     assert result["development_pass"] is True
     assert result["locked_release_pass"] is False
     assert all(row["expected_check"] in row["failed_checks"] for row in result["results"])

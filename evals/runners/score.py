@@ -77,15 +77,29 @@ def score_case(case: dict, payload: dict, http_status: int, db: Session) -> tupl
 
 def _item_refund_balanced(db: Session, item: m.OrderItem) -> bool:
     item_ledgers = db.scalars(select(m.RefundLedger).where(m.RefundLedger.order_item_id == item.id)).all()
-    item_refunded_quantity = 0
+    allocation = db.get(m.PaidAllocation, item.id)
+    if allocation is None or allocation.paid_cents != item.paid_cents:
+        return False
+    issued = []
     for entry in item_ledgers:
         proposal = db.get(m.RefundProposal, entry.proposal_id)
         request = db.get(m.ReturnRequest, proposal.return_id) if proposal else None
-        if request is None or request.order_item_id != item.id:
+        if request is None or request.order_item_id != item.id or entry.issued_at is None:
             return False
+        issued.append((proposal.order_version, aware(entry.issued_at), entry.id, entry, request))
+    item_refunded_quantity = 0
+    expected_cents = 0
+    for _, _, _, entry, request in sorted(issued):
         item_refunded_quantity += request.quantity
+        if item_refunded_quantity > item.quantity:
+            return False
+        next_expected = allocation.paid_cents * item_refunded_quantity // item.quantity
+        if entry.amount_cents != next_expected - expected_cents:
+            return False
+        expected_cents = next_expected
     return (item.refunded_cents == sum(entry.amount_cents for entry in item_ledgers)
             and item.refunded_quantity == item_refunded_quantity
+            and item.refunded_cents == expected_cents
             and 0 <= item.refunded_cents <= item.paid_cents
             and 0 <= item.refunded_quantity <= item.quantity)
 

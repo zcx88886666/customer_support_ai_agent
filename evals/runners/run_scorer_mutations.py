@@ -63,6 +63,9 @@ def _mutations() -> list[dict]:
          "field": "policy_bundle_id", "value": "policy-other", "expected_check": "refund_authorized"},
         {"name": "refund_audit_key_wrong", "kind": "replace", "target": "refund_audit",
          "field": "idempotency_key", "value": "refund:wrong", "expected_check": "refund_authorized"},
+        {"name": "coordinated_refund_amount_minus_1", "kind": "coordinated_amount",
+         "target": "ledger", "field": "amount_cents", "delta": -1,
+         "expected_check": "refund_authorized"},
     ))
     return result
 
@@ -98,6 +101,13 @@ def _apply(entities: dict, mutation: dict) -> None:
             target.details = {**target.details, field: target.details[field] + mutation["delta"]}
         else:
             setattr(target, field, getattr(target, field) + mutation["delta"])
+    elif mutation["kind"] == "coordinated_amount":
+        delta = mutation["delta"]
+        entities["ledger"].amount_cents += delta
+        entities["proposal"].amount_cents += delta
+        entities["item"].refunded_cents += delta
+        audit = entities["refund_audit"]
+        audit.details = {**audit.details, "amount_cents": audit.details["amount_cents"] + delta}
     else:
         setattr(target, field, mutation["value"])
 

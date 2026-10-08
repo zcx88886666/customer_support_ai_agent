@@ -342,14 +342,6 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
             finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="incomplete", queried_at=datetime.now(timezone.utc), unresolved=["order_evidence_missing"], tool_calls=len(tools))
         else:
             try:
-                if shipment:
-                    with read_lock:
-                        owned_shipment = db.get(m.Shipment, shipment["id"])
-                    if owned_shipment is None or owned_shipment.order_id != task.verified_order_ref:
-                        finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision,
-                                                    status="conflict", queried_at=datetime.now(timezone.utc),
-                                                    unresolved=["shipment_source_mismatch"], tool_calls=len(tools))
-                        return {"finding": finding.model_dump(mode="json")}
                 if shipment and _shipment_delivery_conflict(shipment["status"], shipment.get("delivered_at")):
                     finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision,
                                                 status="conflict", queried_at=datetime.now(timezone.utc),
@@ -360,10 +352,18 @@ def build_order_graph(db: Session, customer_id: str, access_token: str | None = 
                 evidence = [(order["id"], {"order_status": facts["order_status"]})]
                 if shipment:
                     evidence.append((shipment["id"], {"shipment_status": facts["shipment_status"], "delivered_at": facts["delivered_at"]}))
-                ranked = review_evidence("order_agent", task.question_scope, evidence)
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="ok", facts=facts,
                     source_ids=[ref for ref, _ in evidence], source_version=str(order["version"]), queried_at=datetime.now(timezone.utc),
-                    tool_calls=len(tools), model_reviewed=bool(ranked), reviewed_source_ids=ranked)
+                    tool_calls=len(tools))
+                with read_lock:
+                    verified = validate_finding(db, customer_id, task, finding, task.plan_revision)
+                if not verified:
+                    finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision,
+                                                status="conflict", queried_at=datetime.now(timezone.utc),
+                                                unresolved=["order_source_mismatch"], tool_calls=len(tools))
+                    return {"finding": finding.model_dump(mode="json")}
+                ranked = review_evidence("order_agent", task.question_scope, evidence)
+                finding = finding.model_copy(update={"model_reviewed": bool(ranked), "reviewed_source_ids": ranked})
             except (KeyError, TypeError):
                 finding = SpecialistFinding(task_id=task.task_id, plan_revision=task.plan_revision, status="error", queried_at=datetime.now(timezone.utc), unresolved=["commerce_unavailable"], tool_calls=len(tools))
         return {"finding": finding.model_dump(mode="json")}

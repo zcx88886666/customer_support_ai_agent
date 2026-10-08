@@ -509,6 +509,36 @@ def test_foreign_mcp_shipment_is_rejected_before_model_evidence_review(db, monke
     assert reviewed == []
 
 
+@pytest.mark.parametrize("order_status,shipment_status,omit_delivery", [
+    ("cancelled", "delivered", False),
+    ("paid", "shipped", True),
+])
+def test_stale_mcp_order_facts_are_rejected_before_model_evidence_review(
+        db, monkeypatch, order_status, shipment_status, omit_delivery):
+    from resolveai import agent
+
+    shipment = db.get(m.Shipment, "demo-shipment-01")
+    monkeypatch.setattr(agent, "settings", replace(agent.settings, auth_mode="oidc"))
+    monkeypatch.setattr(agent, "read_order", lambda *_args: (
+        {"id": "demo-order-01", "status": order_status, "version": 1,
+         "items": [{"id": "demo-item-01", "quantity": 1}]},
+        [{"id": shipment.id, "status": shipment_status,
+          "delivered_at": None if omit_delivery else shipment.delivered_at.isoformat(),
+          "version": shipment.version}]))
+    reviewed = []
+    monkeypatch.setattr(agent, "review_evidence", lambda *_args: reviewed.append(True) or [])
+    task = DelegationTask(task_id="mcp-stale-snapshot", thread_id="thread", plan_revision=1,
+                          specialist="order", question_scope="查物流", verified_order_ref="demo-order-01",
+                          deadline=datetime.now(timezone.utc) + timedelta(seconds=10))
+
+    finding = SpecialistFinding.model_validate(agent.build_order_graph(db, "cust-01", "synthetic-token")
+                                               .invoke({"task": task.model_dump(mode="json")})["finding"])
+
+    assert finding.status == "conflict"
+    assert finding.facts == {} and finding.source_ids == []
+    assert reviewed == []
+
+
 @pytest.mark.parametrize("mode", ["single", "collab"])
 def test_forged_specialist_facts_do_not_leave_public_response(db, monkeypatch, mode):
     from resolveai import agent

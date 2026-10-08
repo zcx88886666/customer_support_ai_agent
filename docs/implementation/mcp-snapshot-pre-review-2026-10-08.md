@@ -1,0 +1,7 @@
+# MCP snapshot verification before model review — 2026-10-08
+
+The [shipment ownership guard](mcp-shipment-pre-review-2026-10-08.md) stopped a foreign shipment from entering optional model evidence review, but an MCP response using the correct IDs could still carry a stale or altered order/shipment status. The coordinator rejected the finding later. This follow-up moves the existing full `validate_finding` check ahead of evidence review, while retaining the coordinator's final validation after review.
+
+Two new synthetic MCP-response regressions used a correct owned shipment ID with either a wrong order status or a wrong but internally consistent shipment status/time pair. Both returned `ok` before the change. They now return a fact-free `conflict` finding and never invoke the evidence reviewer. The earlier foreign-shipment regression remains green. The check also covers the existing order version and delivery timestamp contract without duplicating those rules.
+
+Focused Agent/planning tests passed **78/78**. No-key minimum run `20261008T234958Z-minimum-61bd4c` passed **7/7 suites**, including **379 Python tests passed, five optional skips and nine Alembic warnings**; the locked release gate remains false. The Docker API image was rebuilt and the container recreated; `GET /health` returned `{"status":"ok"}`. The local real Keycloak/OIDC/Commerce MCP smoke passed all seven authorization checks. These were synthetic local checks with no model-provider or Langfuse request. Independent human review of the development gold remains pending.

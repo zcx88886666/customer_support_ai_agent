@@ -76,7 +76,7 @@ def child(kind: str, port: int, scenario: str):
             nonlocal calls
             calls += 1
             call_id = calls
-            if scenario == "duplicate_dispatch":
+            if scenario in {"duplicate_dispatch", "mcp_contradiction"}:
                 print(json.dumps({"event": "shipment_read", "call": call_id}), flush=True)
             if scenario == "mcp_slow" and call_id == 1:
                 print(json.dumps({"event": "slow_tool_started", "call": call_id}), flush=True)
@@ -241,6 +241,19 @@ def run_case(scenario: str, mode: str, admin_url: str, token: str, folder: Path)
                     checks["one_execution_per_commerce_tool"] = contents.count('"event": "order_read"') == contents.count('"event": "shipment_read"') == 1
                     planning = "order_tool_plan" in PromptRegistry(env.get("PROMPT_RELEASE", "release-v1")).manifest["prompts"]
                     checks["one_model_execution_per_specialist"] = first["resource_usage"]["llm_attempts"] == (4 if planning else 2) and first["resource_usage"]["pending_calls"] == 0
+                elif scenario == "mcp_contradiction":
+                    findings = first["findings"]
+                    checks["same_turn_verified_order_and_policy"] = (
+                        first["status"] == "answered" and first["replan_count"] == 1
+                        and len(findings) == 2 and all(finding["plan_revision"] == 2 for finding in findings)
+                        and any(finding["source_ids"] == ["demo-order-02", "demo-shipment-02"]
+                                and finding["facts"]["shipment_status"] == "in_transit" for finding in findings)
+                        and any(finding["source_version"] == "policy-demo-v1" for finding in findings))
+                    contents = (folder / f"{case_id}.mcp.log").read_text()
+                    checks["bounded_shipment_retry"] = (
+                        contents.count('"event": "shipment_read"') == 2
+                        and contents.count('"event": "contradictory_snapshot_sent"') == 1)
+                    checks["no_contradictory_delivery_claim"] = "delivered" not in first["answer"]
                 else:
                     checks["verified_policy_only"] = first["status"] == "answered" and any(finding["source_version"] == "policy-demo-v1" for finding in first["findings"]) and all(not finding["facts"] or "shipment_status" not in finding["facts"] for finding in first["findings"])
                     checks["acknowledged_missing_evidence"] = "部分证据未核实" in first["answer"]

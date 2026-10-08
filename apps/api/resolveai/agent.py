@@ -227,6 +227,44 @@ def validate_finding(db: Session, customer_id: str, task: DelegationTask, findin
     return False
 
 
+def _order_finding_snapshot_mismatch(
+        db: Session, customer_id: str, task: DelegationTask,
+        finding: SpecialistFinding, current_revision: int) -> bool:
+    """Identify a changed owned source, without retrying foreign or malformed references."""
+    if (task.specialist != "order" or finding.status != "ok" or finding.task_id != task.task_id
+            or finding.plan_revision != current_revision or task.plan_revision != current_revision
+            or d.aware(finding.queried_at) > d.aware(task.deadline)
+            or set(finding.facts) != {"order_status", "shipment_status", "delivered_at"}):
+        return False
+    try:
+        order = d.owned_order(db, customer_id, task.verified_order_ref)
+    except d.DomainError:
+        return False
+    if finding.source_version != str(order.version):
+        return False
+    if task.order_read_scope == "status":
+        return (finding.source_ids == [order.id]
+                and finding.facts["shipment_status"] is None
+                and finding.facts["delivered_at"] is None
+                and finding.facts["order_status"] != order.status)
+    shipments = db.scalars(select(m.Shipment).where(m.Shipment.order_id == order.id)).all()
+    shipment = next((row for row in shipments if row.id == task.verified_shipment_ref), None) if task.verified_shipment_ref else shipments[0] if len(shipments) == 1 else None
+    if shipment is None or finding.source_ids != [order.id, shipment.id]:
+        return False
+    if (finding.facts["order_status"] != order.status
+            or finding.facts["shipment_status"] != shipment.status):
+        return True
+    reported_delivery = finding.facts["delivered_at"]
+    if shipment.delivered_at is None:
+        return reported_delivery is not None
+    if not isinstance(reported_delivery, str):
+        return True
+    try:
+        return d.aware(datetime.fromisoformat(reported_delivery)) != d.aware(shipment.delivered_at)
+    except ValueError:
+        return True
+
+
 def build_policy_graph(db: Session):
     read_lock = session_read_lock(db)
 
@@ -437,7 +475,11 @@ def build_coordinator(db: Session, customer_id: str, mode: str, checkpointer=Non
             task = tasks.get(finding.task_id)
             if task and finding.status == "conflict" and finding.plan_revision == state["plan_revision"]:
                 return {"status": "replan", "replan_reason": "specialist_conflict"}
-            if not task or not validate_finding(db, customer_id, task, finding, state["plan_revision"]):
+            if not task:
+                continue
+            if not validate_finding(db, customer_id, task, finding, state["plan_revision"]):
+                if _order_finding_snapshot_mismatch(db, customer_id, task, finding, state["plan_revision"]):
+                    return {"status": "replan", "replan_reason": "order_evidence_mismatch"}
                 continue
             validated.append((task.specialist, finding))
         # Refresh after read-only branches; another transaction may have changed
@@ -624,7 +666,7 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
                 break
             replan_count += 1
             tasks_by_id = {task["task_id"]: task["specialist"] for task in state.get("tasks", [])}
-            keep = {"policy"} if state.get("replan_reason") == "order_changed" else {"order"} if state.get("replan_reason") == "policy_changed" else {"order", "policy"}
+            keep = {"policy"} if state.get("replan_reason") in {"order_changed", "order_evidence_mismatch"} else {"order"} if state.get("replan_reason") == "policy_changed" else {"order", "policy"}
             reuse_findings = {tasks_by_id[finding["task_id"]]: finding for finding in state.get("findings", []) if finding.get("status") == "ok" and finding.get("task_id") in tasks_by_id and tasks_by_id[finding["task_id"]] in keep}
             db.expire_all()
             revision += 1

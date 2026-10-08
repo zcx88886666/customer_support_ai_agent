@@ -758,6 +758,124 @@ def test_specialist_conflict_retries_only_affected_branch(db, monkeypatch):
     assert "尚未确认签收" in result["answer"]
 
 
+@pytest.mark.parametrize("mode", ["single", "collab"])
+def test_transient_order_snapshot_mismatch_retries_only_order_specialist(db, monkeypatch, mode):
+    from resolveai import agent
+
+    original_order = agent.build_order_graph
+    original_policy = agent.build_policy_graph
+    calls = {"order": 0, "policy": 0}
+
+    def order_graph(*args, **kwargs):
+        real = original_order(*args, **kwargs)
+
+        class Wrapped:
+            def invoke(self, state):
+                calls["order"] += 1
+                if calls["order"] == 1:
+                    task = DelegationTask.model_validate(state["task"])
+                    finding = SpecialistFinding(
+                        task_id=task.task_id, plan_revision=task.plan_revision, status="ok",
+                        facts={"order_status": "paid", "shipment_status": "delivered",
+                               "delivered_at": datetime.now(timezone.utc).isoformat()},
+                        source_ids=["demo-order-02", "demo-shipment-02"],
+                        source_version="1", queried_at=datetime.now(timezone.utc))
+                    return {"finding": finding.model_dump(mode="json")}
+                return real.invoke(state)
+
+        return Wrapped()
+
+    def policy_graph(*args, **kwargs):
+        real = original_policy(*args, **kwargs)
+
+        class Wrapped:
+            def invoke(self, state):
+                calls["policy"] += 1
+                return real.invoke(state)
+
+        return Wrapped()
+
+    monkeypatch.setattr(agent, "build_order_graph", order_graph)
+    monkeypatch.setattr(agent, "build_policy_graph", policy_graph)
+    result = run_chat(db, "cust-01", ChatInput(
+        thread_id=f"snapshot-retry-{mode}", message="包裹没到能退吗",
+        order_id="demo-order-02", agent_mode=mode))
+    assert result["status"] == "answered" and result["replan_count"] == 1
+    assert calls == {"order": 2, "policy": 1}
+    assert len(result["findings"]) == 2
+    assert all(finding["plan_revision"] == 2 for finding in result["findings"])
+    assert any(finding["facts"].get("shipment_status") == "in_transit" for finding in result["findings"])
+
+
+@pytest.mark.parametrize("mode", ["single", "collab"])
+def test_persistent_order_snapshot_mismatch_hands_off(db, monkeypatch, mode):
+    from resolveai import agent
+
+    calls = 0
+
+    def mismatched_order_graph(*_args, **_kwargs):
+        class Mismatched:
+            def invoke(self, state):
+                nonlocal calls
+                calls += 1
+                task = DelegationTask.model_validate(state["task"])
+                finding = SpecialistFinding(
+                    task_id=task.task_id, plan_revision=task.plan_revision, status="ok",
+                    facts={"order_status": "paid", "shipment_status": "delivered",
+                           "delivered_at": datetime.now(timezone.utc).isoformat()},
+                    source_ids=["demo-order-02", "demo-shipment-02"],
+                    source_version="1", queried_at=datetime.now(timezone.utc))
+                return {"finding": finding.model_dump(mode="json")}
+
+        return Mismatched()
+
+    monkeypatch.setattr(agent, "build_order_graph", mismatched_order_graph)
+    result = run_chat(db, "cust-01", ChatInput(
+        thread_id=f"snapshot-limit-{mode}", message="包裹没到能退吗",
+        order_id="demo-order-02", agent_mode=mode))
+    assert result["status"] == "handoff" and result["replan_count"] == 2
+    assert calls == 3 and result["findings"] == []
+    assert db.get(m.Ticket, result["ticket_id"]).customer_id == "cust-01"
+    assert db.query(m.ReturnRequest).count() == db.query(m.RefundLedger).count() == 0
+
+
+@pytest.mark.parametrize("mode", ["single", "collab"])
+def test_status_only_order_snapshot_mismatch_retries(db, monkeypatch, mode):
+    from resolveai import agent
+
+    original_order = agent.build_order_graph
+    calls = 0
+
+    def order_graph(*args, **kwargs):
+        real = original_order(*args, **kwargs)
+
+        class Wrapped:
+            def invoke(self, state):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    task = DelegationTask.model_validate(state["task"])
+                    finding = SpecialistFinding(
+                        task_id=task.task_id, plan_revision=task.plan_revision, status="ok",
+                        facts={"order_status": "cancelled", "shipment_status": None, "delivered_at": None},
+                        source_ids=["demo-order-02"], source_version="1",
+                        queried_at=datetime.now(timezone.utc))
+                    return {"finding": finding.model_dump(mode="json")}
+                return real.invoke(state)
+
+        return Wrapped()
+
+    monkeypatch.setattr(agent, "build_order_graph", order_graph)
+    result = run_chat(db, "cust-01", ChatInput(
+        thread_id=f"status-mismatch-{mode}", message="查订单状态",
+        order_id="demo-order-02", agent_mode=mode))
+    assert result["status"] == "answered" and result["replan_count"] == 1
+    assert calls == 2
+    assert len(result["findings"]) == 1
+    assert result["findings"][0]["facts"] == {
+        "order_status": "paid", "shipment_status": None, "delivered_at": None}
+
+
 def test_repeated_specialist_conflict_hands_off(db, monkeypatch):
     from resolveai import agent
 

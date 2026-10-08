@@ -179,7 +179,7 @@ To regenerate and independently validate large synthetic CSV worlds:
 .venv/bin/python data/generator/validate.py data/generated/scale-1m
 ```
 
-The ignored CSV outputs are rebuilt from a fixed seed and clock. [Measured generation results](docs/implementation/data-generation-2026-09-29.md) include row counts, time, machine, and independent validation results. `data/generator/import_postgres.py` streams validated CSV files with PostgreSQL `COPY` after the demo policy has been seeded. The complete `realistic-100k-v3` world was imported into a temporary PostgreSQL 16 database and passed `scripts/verify_postgres.py`; see the [integration report](docs/implementation/postgres-integration-2026-09-30.md).
+The ignored CSV outputs are rebuilt from a fixed seed and clock. [Measured generation results](docs/implementation/data-generation-2026-09-29.md) include row counts, time, machine, and independent validation results. [Adversarial validator checks](docs/implementation/generated-data-adversarial-validation-2026-10-08.md) cover duplicate keys, shipment/event conflicts, and missing or extra rows. `data/generator/import_postgres.py` streams validated CSV files with PostgreSQL `COPY` after the demo policy has been seeded. The complete `realistic-100k-v3` world was imported into a temporary PostgreSQL 16 database and passed `scripts/verify_postgres.py`; see the [integration report](docs/implementation/postgres-integration-2026-09-30.md).
 
 ## Containers, OIDC, and external integrations
 

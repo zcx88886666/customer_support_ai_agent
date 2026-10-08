@@ -34,6 +34,7 @@ MUTANTS = (
     ("review_audit_wrong_actor", "core-chat-expired-window"),
     ("review_ticket_wrong_order", "core-chat-expired-window"),
     ("approval_timestamp_after_refund", "approved_refund"),
+    ("approval_before_proposal", "approved_refund"),
     ("approval_audit_wrong_actor", "approved_refund"),
     ("refund_audit_wrong_version", "approved_refund"),
     ("refund_item_balance_extra_cent", "stale_proposal"),
@@ -85,6 +86,16 @@ def inject(name: str):
 
         def changed(db, actor, proposal_id, approve, at):
             return original(db, actor, proposal_id, approve, at + timedelta(days=1))
+
+        with patch.object(d, "decide_proposal", changed):
+            yield
+        return
+    if name == "approval_before_proposal":
+        original = d.decide_proposal
+
+        def changed(db, actor, proposal_id, approve, at):
+            proposal = db.get(m.RefundProposal, proposal_id)
+            return original(db, actor, proposal_id, approve, proposal.created_at - timedelta(hours=1))
 
         with patch.object(d, "decide_proposal", changed):
             yield

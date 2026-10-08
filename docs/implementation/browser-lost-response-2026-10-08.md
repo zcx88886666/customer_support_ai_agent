@@ -4,6 +4,8 @@ The customer return form already keeps one idempotency key while its order, item
 
 The new Playwright case models a committed return whose first response is lost. It failed on the old message, then passed with the new message. It confirms the next click sends the same request key and displays the recorded return ID. The complete mock return browser suite passed **7/7**. These intercepted responses verify browser behavior; backend idempotency is checked separately by the domain and HTTP suites.
 
+A second Playwright case used the deployed OIDC web, real Keycloak login, and a disposable migrated PostgreSQL-backed API. The browser route forwarded the first authenticated `POST /returns` to that API, read its committed return ID, then deliberately dropped the response before it reached the page. A same-page retry sent the same key and returned the same ID. The case passed **1/1**. Direct database readback found **one return, one `create_return` audit, and zero refund ledgers**. The disposable API and database were removed after verification; the live demo database was untouched. This proves the direct return path with a real commit and lost response. Agent and explicit review paths still have only the mock browser recovery check.
+
 The WSL host had no Node/npm or Linux browser. A version-matched `mcr.microsoft.com/playwright:v1.63.0-noble` image supplied both. A disposable mock-mode web server mounted `apps/web` on port 3001, and a second container ran the tests with host networking. The disposable server was stopped and removed after the run. The production web build passed in that container. Docker Compose rebuilt and recreated the local API and web; `GET /health` returned `{"status":"ok"}` and the web returned HTTP 200. No OpenRouter or Langfuse call was made.
 
 To rerun the mock browser check from the repository root after pulling the version-matched image:
@@ -14,4 +16,4 @@ docker run --rm --network host -v "$PWD/apps/web:/work" -w /work -e CHAT_RETURN_
 docker stop resolveai-browser-recovery-web
 ```
 
-The commands use the existing `apps/web/node_modules` tree. This mock browser run does not exercise real OIDC or a dropped network response against the live API; those remain separate end-to-end recovery checks.
+The commands use the existing `apps/web/node_modules` tree. To run the real OIDC case, create a fresh migrated and seeded OIDC API on local port 8003, then run `BROWSER_RECOVERY_API_URL=http://localhost:8003 ./node_modules/.bin/playwright test tests/return-recovery-oidc.spec.ts --workers=1` from `apps/web` with the version-matched browser runtime. The test redirects only that browser's API calls to the isolated service; use a new database because it commits one return.

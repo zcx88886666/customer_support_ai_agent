@@ -1,8 +1,10 @@
 # ResolveAI implementation status
 
-> Verified through 2026-10-08 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
+> Verified through 2026-10-09 UTC. This page reports repository evidence, not v6 design targets. The approved design remains in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [v6](../plans/resolveai-v6.md).
 
 ## Current snapshot
+
+- [Support ticket selection races](implementation/ticket-selection-races-2026-10-09.md) now discard stale ticket details after a newer selection or filter and prevent an old action from reopening its prior ticket. Three held-response browser regressions went red→green; the adjacent browser suites passed **18/18**, production web build passed, and the no-key minimum passed **7/7** with **379 Python tests passed and five optional skips**. Rebuilt Compose web returned HTTP 200, API health passed, and four real-Keycloak role views passed. No model or Langfuse call was made. Wider accessibility/recovery and independent human review remain open; the locked gate is false.
 
 - [Browser chat context after an order change](implementation/browser-chat-context-2026-10-08.md) prevents a slow chat response for one order from appearing after the same customer selects another order or package. A held-response browser regression went red→green; the adjacent browser suites passed **12/12**, production web build passed, and the no-key minimum passed **7/7** with **379 Python tests passed and five optional skips**. Rebuilt Compose web returned HTTP 200, API health passed, and four real-Keycloak role views passed. No model or Langfuse call was made. Wider frontend recovery/accessibility and independent human review remain open; the locked gate is false.
 

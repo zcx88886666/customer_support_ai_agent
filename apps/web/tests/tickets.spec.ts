@@ -162,3 +162,124 @@ test("an in-flight support resolution keeps the newly selected ticket filter", a
   await expect(page.getByRole("button", { name: "ticket-b" })).toBeVisible();
   await expect(page.getByRole("button", { name: "ticket-a" })).toHaveCount(0);
 });
+
+test("a slower ticket detail cannot replace the ticket selected afterward", async ({ page }) => {
+  test.skip(process.env.TICKET_UI_TEST !== "1", "Run with a temporary mock-mode web server on port 3001");
+  let releaseFirst = () => {};
+  let firstArrived = () => {};
+  const heldFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const firstStarted = new Promise<void>((resolve) => { firstArrived = resolve; });
+  await page.route("http://localhost:8000/**", async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: cors });
+      return;
+    }
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/tickets/ticket-a") {
+      firstArrived();
+      await heldFirst;
+    }
+    const ticket = (id: string) => ({ id, topic: "delivery review", status: "open", order_id: null,
+      created_at: "2026-09-29T12:00:00Z", messages: [] });
+    const data = path === "/tickets" ? [ticket("ticket-a"), ticket("ticket-b")]
+      : path === "/tickets/ticket-a" ? ticket("ticket-a") : ticket("ticket-b");
+    await route.fulfill({ status: 200, contentType: "application/json", headers: cors,
+      body: JSON.stringify(data) });
+  });
+
+  await page.goto("http://localhost:3001/");
+  await page.getByRole("button", { name: "刷新工单" }).click();
+  await page.getByRole("button", { name: "ticket-a" }).click();
+  await firstStarted;
+  await page.getByRole("button", { name: "ticket-b" }).click();
+  await expect(page.getByRole("heading", { name: "工单 ticket-b · open" })).toBeVisible();
+  const oldResponse = page.waitForResponse("http://localhost:8000/tickets/ticket-a");
+  releaseFirst();
+  await oldResponse;
+  await page.waitForTimeout(150);
+
+  await expect(page.getByRole("heading", { name: "工单 ticket-b · open" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "工单 ticket-a · open" })).toHaveCount(0);
+});
+
+test("ticket detail loading cannot reopen a ticket hidden by a new status filter", async ({ page }) => {
+  test.skip(process.env.TICKET_UI_TEST !== "1", "Run with a temporary mock-mode web server on port 3001");
+  let releaseDetail = () => {};
+  let detailArrived = () => {};
+  const heldDetail = new Promise<void>((resolve) => { releaseDetail = resolve; });
+  const detailStarted = new Promise<void>((resolve) => { detailArrived = resolve; });
+  const row = (id: string, status: string) => ({ id, topic: "review", status, order_id: null,
+    created_at: "2026-09-29T12:00:00Z", messages: [] });
+  await page.route("http://localhost:8000/**", async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: cors });
+      return;
+    }
+    const url = new URL(route.request().url());
+    if (url.pathname === "/tickets/ticket-a") {
+      detailArrived();
+      await heldDetail;
+    }
+    const data = url.pathname === "/tickets"
+      ? url.searchParams.get("status") === "resolved" ? [row("ticket-b", "resolved")] : [row("ticket-a", "open")]
+      : row("ticket-a", "open");
+    await route.fulfill({ status: 200, contentType: "application/json", headers: cors,
+      body: JSON.stringify(data) });
+  });
+
+  await page.goto("http://localhost:3001/");
+  await page.getByRole("button", { name: "刷新工单" }).click();
+  await page.getByRole("button", { name: "ticket-a" }).click();
+  await detailStarted;
+  await page.getByLabel("工单状态").selectOption("resolved");
+  await expect(page.getByRole("button", { name: "ticket-b" })).toBeVisible();
+  const oldResponse = page.waitForResponse("http://localhost:8000/tickets/ticket-a");
+  releaseDetail();
+  await oldResponse;
+  await page.waitForTimeout(150);
+
+  await expect(page.getByRole("button", { name: "ticket-a" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "工单 ticket-a · open" })).toHaveCount(0);
+});
+
+test("a completed ticket action does not reopen an older selected ticket", async ({ page }) => {
+  test.skip(process.env.TICKET_UI_TEST !== "1", "Run with a temporary mock-mode web server on port 3001");
+  let releaseAction = () => {};
+  let actionArrived = () => {};
+  const heldAction = new Promise<void>((resolve) => { releaseAction = resolve; });
+  const actionStarted = new Promise<void>((resolve) => { actionArrived = resolve; });
+  const ticket = (id: string) => ({ id, topic: "review", status: "open", order_id: null,
+    created_at: "2026-09-29T12:00:00Z", messages: [] });
+  await page.route("http://localhost:8000/**", async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: cors });
+      return;
+    }
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/tickets/ticket-a/messages") {
+      actionArrived();
+      await heldAction;
+    }
+    const data = path === "/tickets" ? [ticket("ticket-a"), ticket("ticket-b")]
+      : path === "/tickets/ticket-b" ? ticket("ticket-b")
+      : path === "/tickets/ticket-a" ? ticket("ticket-a") : { id: "message-a" };
+    await route.fulfill({ status: 200, contentType: "application/json", headers: cors,
+      body: JSON.stringify(data) });
+  });
+
+  await page.goto("http://localhost:3001/");
+  await page.getByRole("button", { name: "刷新工单" }).click();
+  await page.getByRole("button", { name: "ticket-a" }).click();
+  await page.getByLabel("工单消息").fill("Please review this.");
+  await page.getByRole("button", { name: "发送工单消息" }).click();
+  await actionStarted;
+  await page.getByRole("button", { name: "ticket-b" }).click();
+  await expect(page.getByRole("heading", { name: "工单 ticket-b · open" })).toBeVisible();
+  const actionResponse = page.waitForResponse("http://localhost:8000/tickets/ticket-a/messages");
+  releaseAction();
+  await actionResponse;
+  await page.waitForTimeout(150);
+
+  await expect(page.getByRole("heading", { name: "工单 ticket-b · open" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "工单 ticket-a · open" })).toHaveCount(0);
+});

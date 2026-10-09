@@ -51,6 +51,7 @@ export default function Home() {
   const ticketStatusRef = useRef<TicketStatus>("all");
   const [ticketsHasMore, setTicketsHasMore] = useState(false);
   const ticketListVersion = useRef(0);
+  const ticketDetailVersion = useRef(0);
   const [ticketDetail, setTicketDetail] = useState<TicketDetail | null>(null);
   const [ticketText, setTicketText] = useState("");
   const [supportAssignee, setSupportAssignee] = useState("");
@@ -266,15 +267,21 @@ export default function Home() {
     } catch (error) { if (clearNotice && version === ticketListVersion.current) showError(error); }
   }
   async function openTicket(id: string) {
-    try { setTicketDetail(await call(`/tickets/${encodeURIComponent(id)}`)); setTicketText(""); setNotice(""); } catch (error) { showError(error); }
+    const version = ++ticketDetailVersion.current;
+    try {
+      const detail = await call(`/tickets/${encodeURIComponent(id)}`);
+      if (version !== ticketDetailVersion.current) return;
+      setTicketDetail(detail); setTicketText(""); setNotice("");
+    } catch (error) { if (version === ticketDetailVersion.current) showError(error); }
   }
   async function ticketAction(action: "messages" | "resolve") {
     if (!ticketDetail || !ticketText.trim()) return;
     const requestedGeneration = identityGeneration.current;
+    const selectedTicketVersion = ticketDetailVersion.current;
     const id = ticketDetail.id;
     try {
       await call(`/tickets/${encodeURIComponent(id)}/${action}`, { method: "POST", body: JSON.stringify({ body: ticketText }) });
-      await openTicket(id);
+      if (ticketDetailVersion.current === selectedTicketVersion) await openTicket(id);
       await loadTickets();
       if (identityGeneration.current === requestedGeneration) setNotice(action === "resolve" ? "工单已处理。退货与退款仍需各自的业务审核。" : "消息已发送");
     } catch (error) { showError(error); }
@@ -301,6 +308,7 @@ export default function Home() {
         <label>工单状态<select value={ticketStatus} onChange={(event) => {
           const next = event.target.value as TicketStatus;
           ticketStatusRef.current = next;
+          ticketDetailVersion.current += 1;
           setTicketStatus(next); setTickets([]); setTicketsHasMore(false); setTicketDetail(null);
           void loadTickets(null, next);
         }}><option value="all">全部</option><option value="open">待处理</option><option value="resolved">已结案</option></select></label>

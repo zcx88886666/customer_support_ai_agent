@@ -386,6 +386,57 @@ def test_model_cannot_silently_drop_explicit_high_risk_action(monkeypatch):
         assert decision.route == "human_handoff" and decision.intents == [intent]
 
 
+def test_model_unknown_handoff_clarifies_ambiguous_confirmation_without_ticket(db, monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="human_handoff", intents=["unknown"]))
+    decision = classify("我确认提交")
+    assert decision.route == "clarify" and decision.intents == ["unknown"]
+    result = run_chat(db, "cust-01", ChatInput(thread_id="ambiguous-confirmation", message="我确认提交",
+                                              confirmed=True, idempotency_key="ambiguous-confirmation"))
+    assert result["status"] == "clarify"
+    assert db.query(m.ReturnRequest).count() == 0
+    assert db.query(m.Ticket).count() == 0
+
+
+def test_model_unknown_label_cannot_hide_explicit_logistics_question(monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda *args: RouteDecision(route="knowledge", intents=["unknown"]))
+    decision = classify("物流在哪里")
+    assert decision.route == "knowledge" and decision.intents == ["shipment_tracking"]
+
+
+def test_model_out_of_scope_slot_followups_keep_pending_return_without_unsafe_write(db, monkeypatch):
+    from resolveai import agent
+    from resolveai.schemas import RouteDecision
+
+    shipment = db.query(m.Shipment).filter(m.Shipment.order_id == "demo-order-01").one()
+    shipment.delivered_at = datetime.now(timezone.utc) - timedelta(days=1)
+    monkeypatch.setattr(agent, "model_configured", lambda: True)
+    monkeypatch.setattr(agent, "call_structured", lambda _task, variables, *_args: (
+        RouteDecision(route="after_sales", intents=["return_request"])
+        if "我要退" in variables["message"] else RouteDecision(route="out_of_scope", intents=["unknown"])))
+    first = run_chat(db, "cust-01", ChatInput(thread_id="model-slot-followup", message="我要退这件商品",
+                                               order_id="demo-order-01"))
+    assert first["status"] == "clarify"
+    second = run_chat(db, "cust-01", ChatInput(thread_id="model-slot-followup", message="这件",
+                                                item_id="demo-item-01"))
+    assert second["status"] == "clarify" and second["plan_revision"] == 2
+    assert db.query(m.ReturnRequest).count() == 0
+    third = run_chat(db, "cust-01", ChatInput(thread_id="model-slot-followup", message="我确认提交",
+                                               quantity=1, reason="changed mind", confirmed=True,
+                                               idempotency_key="model-slot-followup"))
+    assert third["status"] == "return_requested" and third["plan_revision"] == 3
+    assert db.query(m.ReturnRequest).count() == 1
+    assert db.query(m.RefundLedger).count() == 0
+    assert db.query(m.Ticket).count() == 0
+
+
 def test_single_domain_and_thread_isolation(db):
     result = run_chat(db, "cust-01", ChatInput(thread_id="thread-2", message="七天无理由退货政策是什么", agent_mode="collab"))
     assert len(result["findings"]) == 1

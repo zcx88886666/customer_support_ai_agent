@@ -103,6 +103,8 @@ def classify(text: str) -> RouteDecision:
                 intents = [intent for intent in intents if intent != "order_status"]
                 if "shipment_tracking" not in intents:
                     intents.append("shipment_tracking")
+            if shipment_question and intents == ["unknown"] and not high_risk_word and not return_action:
+                intents = ["shipment_tracking"] + (["policy_qa"] if policy_question else [])
             if shipment_question and policy_question and not return_action and not any(intent in intents for intent in ("cancel_request", "complaint")):
                 # Explicitly mixed read questions need both verified sources even
                 # when the model labels only one. Keep a refund intent if present.
@@ -112,6 +114,8 @@ def classify(text: str) -> RouteDecision:
                         intents.append(intent)
             if not intents:
                 return RouteDecision(route="clarify", intents=["unknown"], uncertainty="unverified_action")
+            if candidate.route == "human_handoff" and intents == ["unknown"]:
+                return RouteDecision(route="clarify", intents=["unknown"], uncertainty="intent_unclear")
             if candidate.route in {"clarify", "out_of_scope"} and shipment_question and not high_risk_word and not return_action:
                 return RouteDecision(route="knowledge", intents=["shipment_tracking"] + (["policy_qa"] if policy_question else []))
             candidate = candidate.model_copy(update={"intents": intents[:3]})
@@ -604,6 +608,11 @@ def _run_chat(db: Session, customer_id: str, body: ChatInput, *, access_token: s
     pending_expired = bool(thread and previous.get("status") == "clarify" and thread.updated_at and now - d.aware(thread.updated_at) > timedelta(hours=24))
     decision = forced_decision or classify(body.message)
     continuing = previous.get("status") == "clarify" and not pending_expired
+    supplied_slot = bool(body.order_id or body.shipment_id or body.item_id or body.quantity is not None or body.reason)
+    explicit_confirmation = body.confirmed and any(term in body.message.lower() for term in ("确认", "submit", "confirm"))
+    if (continuing and decision.route == "out_of_scope" and decision.intents == ["unknown"]
+            and (supplied_slot or explicit_confirmation)):
+        decision = RouteDecision(route="clarify", intents=["unknown"], uncertainty="slot_followup")
     if continuing and decision.route == "clarify":
         if previous.get("pending_route"):
             pending_route = RouteDecision.model_validate(previous["pending_route"])

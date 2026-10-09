@@ -10,6 +10,7 @@ apps/web/playwright-report/
 *.sqlite*
 evals/reports/*/
 evals/review_packets/*/
+evals/reviewed_candidates/*/
 observability/exports/*/
 observability/prompt_mirror_map.json
 data/generated/

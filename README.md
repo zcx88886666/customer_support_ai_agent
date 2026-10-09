@@ -6,7 +6,7 @@ The first runnable development preview is [v0.1.0](docs/releases/v0.1.0.md). It 
 
 ## Docker Compose run (recommended)
 
-From the repository root, start the local mock stack with PostgreSQL 17, pgvector, API, web UI, Redis/Celery worker and scheduler, Commerce MCP, OTel Collector, and Jaeger. No API keys are needed:
+From the repository root, start the local mock stack with PostgreSQL 17, pgvector, API, web UI, Redis/Celery operational and bulk workers plus scheduler, Commerce MCP, OTel Collector, and Jaeger. No API keys are needed:
 
 ```bash
 docker compose -f infra/compose/compose.yaml up --build -d
@@ -76,7 +76,7 @@ Open `http://localhost:3000`. The page exposes customer, support, warehouse, and
    A confirmed return through `/chat` uses the same return-or-review decision. A policy-ineligible, undelivered, or outside-window request returns `status=human_review`, `ticket_id`, and `reason_code`; it creates one support ticket without creating a return or refund. Retry with the same request details and idempotency key to get the same ticket, including after clarification or support resolution. In the web return form, choose the item for a multi-item order, confirm the current fields, then use **通过 Agent 提交退货** to send them through `/chat`. It shares the request key with direct submission. See the [chat return review](docs/implementation/chat-return-review-2026-10-07.md) and [web action](docs/implementation/web-agent-return-2026-10-07.md) reports.
 3. Warehouse: `POST /warehouse/returns/{id}/receipt`, then `/inspection`, then `POST /returns/{id}/proposal`.
 4. Supervisor: `GET /supervisor/proposals`, then `POST /supervisor/proposals/{id}/decision`.
-5. Controlled worker: run `.venv/bin/python -m resolveai.worker` for the direct local setup. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose runs private Redis/Celery refund and deadline jobs every 30 seconds through one Beat scheduler and a two-child worker. [Queue/recovery verification](docs/implementation/celery-jobs-2026-10-05.md) checked duplicates, isolation, worker restart and broker outage; SQL approval remains independent of Redis. The customer and Agent APIs have no refund issuance endpoint.
+5. Controlled worker: run `.venv/bin/python -m resolveai.worker` for the direct local setup. Only approved, current proposals are issued; retries use `refund:{proposal_id}` and create at most one ledger entry. The same one-shot worker records one warning in the final 24 hours of the seven-day period after receipt and one overdue alert. Supervisors can view them at `GET /supervisor/refund-deadlines`. Compose runs private Redis/Celery refund and deadline jobs every 30 seconds through one Beat scheduler and a two-child worker. A queued refund task scans at most 100 proposals and queues a cursor continuation when the batch is full, so stale approved proposals cannot permanently hide later work. [Queue/recovery verification](docs/implementation/celery-jobs-2026-10-05.md) checked duplicates, isolation, worker restart and broker outage; SQL approval remains independent of Redis. The customer and Agent APIs have no refund issuance endpoint.
 
 A human handoff returns a `ticket_id`. The customer can read and message their own ticket through `GET /tickets`, `GET /tickets/{ticket_id}`, and `POST /tickets/{ticket_id}/messages`. A supervisor assigns an open ticket through `POST /supervisor/tickets/{ticket_id}/assign`; only that support actor can reply or close it with `POST /tickets/{ticket_id}/resolve` and a final message. These actions are also available in the web UI. [Ticket workflow verification](docs/implementation/ticket-handoff-2026-10-06.md) covers ownership and audit. Resolving a ticket has no refund authority or effect on a return decision.
 
@@ -89,6 +89,22 @@ When the automatic return rules deny an owned order, a confirmed customer can su
 For a shortage or other quantity mismatch before receipt, warehouse staff enter the observed count and optional explanation, then choose **记录入库**. `POST /warehouse/returns/{id}/receipt` accepts `quantity` and optional `note`; a matching positive count records a receipt (HTTP 200), while a mismatched count, including zero, creates one linked human ticket and moves the return to `exception` (HTTP 202 with `ticket_id`). The separate **上报数量异常并转人工** action remains available as `POST /warehouse/returns/{id}/receipt-dispute` with `observed_quantity` and a required `note`. Exact discrepancy retries reuse the ticket. Closing it does not permit receipt or refund; manual adjudication remains separate. See the [automatic receipt handoff report](docs/implementation/automatic-receipt-dispute-2026-10-07.md).
 
 An isolated [live worker deadline check](docs/implementation/deadline-delivery-2026-10-03.md) verified that the 30-second loop created one due-soon and one overdue alert with audit events and no refund; a later loop did not duplicate them.
+
+The private worker can also generate a synthetic data profile without an API key. From the repository root after rebuilding Compose, queue a named demo run:
+
+```bash
+docker compose -f infra/compose/compose.yaml exec -T bulk-worker python scripts/enqueue_generated_world.py --profile demo --output-name demo-queue-v1
+```
+
+The dedicated one-child bulk worker validates all generated CSV relationships and hashes before publishing under the ignored `data/generated/demo-queue-v1/` directory on the host. The operational worker keeps refund and deadline jobs on a separate queue. The same output name with identical seed, clock and profile is a validated retry; a different contract or incomplete existing output is rejected. Use `--profile realistic` or `--profile scale` only when enough local disk and time are available. The queue stores no model output or credentials, and the generated CSVs are not committed. Check the bulk worker log and the published `data_quality_report.json` for the result.
+
+The bulk worker can also replay one fixed no-key development suite without using OpenRouter or Langfuse:
+
+```bash
+docker compose -f infra/compose/compose.yaml exec -T bulk-worker python scripts/enqueue_development_eval.py policy_rag
+```
+
+The command prints a task ID and the ignored `evals/reports/queued/<task_id>/summary.json` path. Valid suites are `smoke_demo`, `core_business`, `intent_route`, `intent_dialogue`, `policy_rag`, and `collaboration`. The runner uses an isolated temporary SQLite URL and publishes its normal case report separately. A queued development pass does not satisfy the human-reviewed locked release gate.
 
 For a full mock HTTP replay on the seeded local database, run `.venv/bin/python scripts/demo_workflow.py`. It is safe to rerun with the same idempotency key; a second run must not add another ledger entry.
 
@@ -110,6 +126,8 @@ cd apps/web && npm run build
 ```
 
 `verify_minimum.py` runs the seven no-key development checks together and writes an ignored aggregate manifest, suite log, JSONL, summary, and HTML report. A passing development minimum does not mark the independently reviewed locked release gate as passed. See the [minimum run report](docs/implementation/minimum-no-key-2026-10-04.md).
+
+After independent reviewers complete both assigned sheets and adjudication in a local review packet, run `PYTHONPATH=apps/api:. .venv/bin/python scripts/prepare_grouped_split.py <packet-directory>`. The script validates the forms and source hashes, excludes rejected or unresolved cases, requires the minimum reviewed counts, and keeps shared customer/order/source/template families together. It publishes only an ignored **locked candidate** dataset; a release still needs frozen code, policy, model, Prompt, dataset and scorer versions followed by an actual locked replay. Today's author-written development packet is expected to fail the group check because each suite still has one connected fixture/template family. Do not fill review sheets with model output or relabel development cases to bypass that gate.
 
 The smoke runner validates 30 fixed JSONL cases and runs three collaboration cases in both modes, each against a fresh SQLite database through the mock role-checked HTTP API. It writes `manifest.json`, `case_results.jsonl`, `summary.json`, and `report.html` under ignored `evals/reports/<run_id>/`. `summary.json` is the local machine-readable gate. The [database-first scorer](docs/implementation/scorer-mutation-2026-10-03.md) checks final return/refund facts, approval evidence, ownership, and citations; adversarial tests verify it rejects false outcomes. These cases are synthetic development cases, not a human-reviewed locked benchmark or a measured real-model comparison. The [stateful refund tests](docs/implementation/refund-stateful-2026-10-03.md) add generated action ordering and stale approved-fact checks. See the [30-case expansion report](docs/implementation/smoke-expansion-2026-10-03.md).
 

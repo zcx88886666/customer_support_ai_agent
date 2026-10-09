@@ -4,6 +4,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock /app/
 RUN uv sync --locked --no-dev --extra observability --no-install-project
 COPY apps /app/apps
+COPY data /app/data
+COPY evals /app/evals
 COPY packages /app/packages
 COPY prompts /app/prompts
 COPY services /app/services

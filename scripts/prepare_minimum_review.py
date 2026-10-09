@@ -70,8 +70,8 @@ def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
         writer.writerows(rows)
 
 
-def group_component_sizes(cases: list[dict]) -> list[int]:
-    """Find leakage-connected groups, including links across suites."""
+def group_components(cases: list[dict]) -> list[list[int]]:
+    """Return case-index groups joined by customer, order, source or template."""
     parent = list(range(len(cases)))
     first: dict[tuple[str, str], int] = {}
 
@@ -91,7 +91,15 @@ def group_component_sizes(cases: list[dict]) -> list[int]:
                 parent[root(index)] = root(first[pair])
             else:
                 first[pair] = index
-    return sorted(Counter(root(index) for index in range(len(cases))).values(), reverse=True)
+    components: dict[int, list[int]] = {}
+    for index in range(len(cases)):
+        components.setdefault(root(index), []).append(index)
+    return sorted(components.values(), key=lambda indexes: min(cases[index]["case_id"] for index in indexes))
+
+
+def group_component_sizes(cases: list[dict]) -> list[int]:
+    """Find leakage-connected group sizes, including links across suites."""
+    return sorted((len(component) for component in group_components(cases)), reverse=True)
 
 
 def group_component_counts(cases: list[dict]) -> dict[str, int]:

@@ -7,15 +7,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import func, select
 
-from resolveai import domain as d, models as m
+from resolveai import domain as d, models as m, worker
 
 
 AT = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
 
 
-def make_jobs(namespace, database_url):
+def make_jobs(namespace, database_url, refund_batch_size=100):
     assert importlib.util.find_spec('resolveai.jobs') is not None, 'Controlled Celery job boundary is missing'
-    return importlib.import_module('resolveai.jobs').make_app(namespace, database_url, 'memory://')
+    return importlib.import_module('resolveai.jobs').make_app(
+        namespace, database_url, 'memory://', refund_batch_size=refund_batch_size)
 
 
 def prepared_proposal(factory, approved=False):
@@ -46,6 +47,82 @@ def test_queued_refund_requires_approval_and_repeats_only_one_ledger(session_fac
         assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == 'issue_refund')) == 1
         item = db.get(m.OrderItem, 'demo-item-01')
         assert item.refunded_quantity == 1 and item.refunded_cents == item.paid_cents
+
+
+def test_refund_job_processes_approved_proposals_in_bounded_batches(session_factory):
+    app = make_jobs('test-refund-batches', str(session_factory.kw['bind'].url), refund_batch_size=1)
+    prepared_proposal(session_factory, approved=True)
+    with session_factory.begin() as db:
+        request = d.create_return(db, 'cust-01', 'demo-order-06', 'demo-item-06', 1,
+                                  'synthetic job', True, 'job-return-six', AT)
+        d.record_receipt(db, 'warehouse-job', request.id, 1, AT)
+        d.record_inspection(db, 'warehouse-job', request.id, True, 'intact', AT)
+        proposal = d.create_proposal(db, request.id, AT)
+        d.decide_proposal(db, 'supervisor-job', proposal.id, True, AT)
+    task = app.tasks['resolveai.jobs.refunds']
+    assert task.apply(args=['test-refund-batches'], throw=True).get() == {'issued_count': 1}
+    with session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 1
+    assert task.apply(args=['test-refund-batches'], throw=True).get() == {'issued_count': 1}
+    assert task.apply(args=['test-refund-batches'], throw=True).get() == {'issued_count': 0}
+    with session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 2
+        assert db.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.action == 'issue_refund')) == 2
+
+
+@pytest.mark.parametrize('batch_size', [0, -1, 1.5, True, 1001])
+def test_refund_worker_rejects_invalid_batch_size(session_factory, batch_size):
+    with pytest.raises(ValueError, match='batch size'):
+        worker.issue_approved_once(session_factory=session_factory, batch_size=batch_size)
+
+
+def test_refund_batch_cursor_reaches_valid_proposal_after_stale_one(session_factory):
+    prepared_proposal(session_factory, approved=True)
+    with session_factory.begin() as db:
+        request = d.create_return(db, 'cust-01', 'demo-order-06', 'demo-item-06', 1,
+                                  'synthetic job', True, 'job-valid-after-stale', AT)
+        d.record_receipt(db, 'warehouse-job', request.id, 1, AT)
+        d.record_inspection(db, 'warehouse-job', request.id, True, 'intact', AT)
+        proposal = d.create_proposal(db, request.id, AT)
+        d.decide_proposal(db, 'supervisor-job', proposal.id, True, AT)
+    with session_factory.begin() as db:
+        stale = db.scalar(select(m.RefundProposal).where(m.RefundProposal.status == 'approved')
+                          .order_by(m.RefundProposal.id))
+        stale_id = stale.id
+        stale_return = db.get(m.ReturnRequest, stale.return_id)
+        db.get(m.Order, stale_return.order_id).version += 1
+    first = worker.issue_approved_batch(session_factory=session_factory, batch_size=1)
+    assert first.issued_ids == []
+    assert first.last_candidate_id == stale_id
+    assert first.may_have_more is True
+    second = worker.issue_approved_batch(session_factory=session_factory, batch_size=1,
+                                         after_id=first.last_candidate_id)
+    assert len(second.issued_ids) == 1
+    with session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 1
+        assert db.get(m.RefundProposal, stale_id).status == 'approved'
+
+
+def test_refund_job_continues_past_stale_approved_proposal(session_factory):
+    prepared_proposal(session_factory, approved=True)
+    with session_factory.begin() as db:
+        request = d.create_return(db, 'cust-01', 'demo-order-06', 'demo-item-06', 1,
+                                  'synthetic job', True, 'job-continue-valid', AT)
+        d.record_receipt(db, 'warehouse-job', request.id, 1, AT)
+        d.record_inspection(db, 'warehouse-job', request.id, True, 'intact', AT)
+        proposal = d.create_proposal(db, request.id, AT)
+        d.decide_proposal(db, 'supervisor-job', proposal.id, True, AT)
+    with session_factory.begin() as db:
+        stale = db.scalar(select(m.RefundProposal).where(m.RefundProposal.status == 'approved')
+                          .order_by(m.RefundProposal.id))
+        stale_id = stale.id
+        db.get(m.Order, db.get(m.ReturnRequest, stale.return_id).order_id).version += 1
+    app = make_jobs('test-refund-continuation', str(session_factory.kw['bind'].url), refund_batch_size=1)
+    app.conf.task_always_eager = True
+    app.tasks['resolveai.jobs.refunds'].apply(args=['test-refund-continuation'], throw=True)
+    with session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(m.RefundLedger)) == 1
+        assert db.get(m.RefundProposal, stale_id).status == 'approved'
 
 
 def test_foreign_job_namespace_cannot_issue_approved_refund(session_factory):

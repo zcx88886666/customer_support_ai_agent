@@ -81,7 +81,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/compose/Dockerfile
-    command: ["celery", "-A", "resolveai.jobs:app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    command: ["python", "scripts/run_celery_worker.py", "--kind", "operational"]
     environment:
       DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -89,6 +89,25 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: resolveai-worker
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  bulk-worker:
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+    command: ["python", "scripts/run_celery_worker.py", "--kind", "bulk"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://resolveai@postgres:5432/resolveai
+      CELERY_BROKER_URL: redis://redis:6379/0
+      JOB_NAMESPACE: ${JOB_NAMESPACE:-dev}
+      OTEL_METRICS_EXPORTER: none
+    volumes:
+      - ../../data/generated:/app/data/generated
+      - ../../evals/reports:/app/evals/reports
     depends_on:
       api:
         condition: service_healthy

@@ -6,6 +6,7 @@ do not expose a refund tool or endpoint.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, exists, or_, select
@@ -16,12 +17,28 @@ from .db import SessionLocal
 from .telemetry import configure_telemetry, tracer
 
 
-def issue_approved_once(*, session_factory=None) -> list[str]:
+@dataclass(frozen=True)
+class RefundBatch:
+    issued_ids: list[str]
+    last_candidate_id: str | None
+    may_have_more: bool
+
+
+def issue_approved_batch(*, session_factory=None, batch_size: int,
+                         after_id: str | None = None) -> RefundBatch:
+    if type(batch_size) is not int or not 1 <= batch_size <= 1000:
+        raise ValueError("Refund batch size must be an integer from 1 to 1000")
+    if after_id is not None and (not isinstance(after_id, str) or not after_id or len(after_id) > 64):
+        raise ValueError("Refund cursor must be a nonempty proposal ID")
     configure_telemetry()
     factory = session_factory or SessionLocal
     issued = []
     with factory() as db:
-        ids = db.scalars(select(m.RefundProposal.id).where(m.RefundProposal.status == "approved")).all()
+        query = (select(m.RefundProposal.id).where(m.RefundProposal.status == "approved")
+                 .order_by(m.RefundProposal.id).limit(batch_size))
+        if after_id is not None:
+            query = query.where(m.RefundProposal.id > after_id)
+        ids = db.scalars(query).all()
     for proposal_id in ids:
         try:
             with tracer().start_as_current_span("refund.worker"):
@@ -31,7 +48,25 @@ def issue_approved_once(*, session_factory=None) -> list[str]:
         except d.DomainError:
             # Stale/invalid proposals remain visible for human resolution.
             continue
-    return issued
+    return RefundBatch(issued, ids[-1] if ids else None, len(ids) == batch_size)
+
+
+def issue_approved_once(*, session_factory=None, batch_size: int | None = None) -> list[str]:
+    """Direct one-shot worker call; queued calls use a bounded cursor batch."""
+    if batch_size is not None:
+        return issue_approved_batch(session_factory=session_factory, batch_size=batch_size).issued_ids
+    return _issue_all_approved(session_factory or SessionLocal)
+
+
+def _issue_all_approved(factory) -> list[str]:
+    issued = []
+    cursor = None
+    while True:
+        batch = issue_approved_batch(session_factory=factory, batch_size=1000, after_id=cursor)
+        issued.extend(batch.issued_ids)
+        if not batch.may_have_more:
+            return issued
+        cursor = batch.last_candidate_id
 
 
 def alert_refund_deadlines_once(at: datetime | None = None, *, session_factory=None,

@@ -60,6 +60,25 @@ def test_replay_environment_locks_prompt_and_disables_external_calls(monkeypatch
     assert all(env[key] == '' for key in ('OPENROUTER_API_KEY', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'))
 
 
+def test_live_replay_passes_only_model_key_to_private_api(monkeypatch):
+    for key in ('OPENROUTER_API_KEY', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
+        monkeypatch.setenv(key, 'synthetic-secret')
+    env = probe.replay_environment('postgresql+psycopg://synthetic@localhost:5432/synthetic',
+                                   'fixture-namespace', live_model=True)
+    assert env['OPENROUTER_API_KEY'] == 'synthetic-secret'
+    assert env['LANGFUSE_PUBLIC_KEY'] == env['LANGFUSE_SECRET_KEY'] == ''
+
+
+def test_live_cost_stop_marks_missing_cases_incomplete():
+    cases = run_intent_dialogue.load_cases()
+    rows = [{'case_id': cases[0]['case_id'], 'risk_tier': cases[0]['risk_tier'], 'status': 'pass',
+             'provider_usage': {'reported_cost_usd': 0.03, 'model_attempts': 2, 'unknown_usage_calls': 0}}]
+    assert probe.live_cost_reached(rows, 0.02)
+    summary = probe.summarize(cases, rows, live_model=True)
+    assert summary['counts'] == {'pass': 1, 'incomplete': len(cases) - 1}
+    assert summary['development_pass'] is False and summary['release_gate_pass'] is False
+
+
 def test_same_scorer_rejects_changed_per_turn_state_and_ledger_count(db):
     case = next(c for c in run_intent_dialogue.load_cases() if c['case_id'] == 'intent-dialogue-explicit-human')
     db.add(m.Ticket(customer_id='cust-01', topic='synthetic human request'))

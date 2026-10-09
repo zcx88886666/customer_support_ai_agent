@@ -32,12 +32,12 @@ def test_extra_package_fixture_preserves_causal_events(session_factory):
         assert db.get(m.Order, shipment.order_id).placed_at < events[0].occurred_at
 
 
-def test_incomplete_or_cancelled_probe_never_reports_twelve_passes():
+def test_incomplete_or_cancelled_probe_never_reports_all_cases_passing():
     cases = run_intent_dialogue.load_cases()
     partial = [{'case_id': cases[0]['case_id'], 'risk_tier': cases[0]['risk_tier'], 'status': 'pass', 'checks': {'one': True}}]
     summary = probe.summarize(cases, partial, cancelled=True)
-    assert summary['unique_cases'] == 12 and summary['executions'] == 1
-    assert summary['counts'] == {'pass': 1, 'incomplete': 11}
+    assert summary['unique_cases'] == len(cases) and summary['executions'] == 1
+    assert summary['counts'] == {'pass': 1, 'incomplete': len(cases) - 1}
     assert summary['development_pass'] is False and summary['release_gate_pass'] is False
     assert cases[1]['case_id'] in summary['critical_failures']
 

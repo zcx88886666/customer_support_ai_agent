@@ -1,4 +1,4 @@
-"""Existing twelve dialogues through owned PostgreSQL, actual OIDC and MCP."""
+"""Development dialogues through owned PostgreSQL, actual OIDC and MCP."""
 
 from __future__ import annotations
 

@@ -43,6 +43,7 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [keycloak, setKeycloak] = useState<Keycloak | null>(null);
   const threadId = useRef("");
+  const chatContextVersion = useRef(0);
   const submission = useRef({ signature: "", key: "" });
   const returnFormVersion = useRef(0);
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -129,11 +130,18 @@ export default function Home() {
     setNotice("");
   }
 
+  function invalidateChatContext() {
+    chatContextVersion.current += 1;
+    setAnswer("");
+    setPendingShipmentOptions([]);
+  }
+
   async function loadOrders() {
     try { setOrders(await call("/orders")); setNotice(""); } catch (error) { showError(error); }
   }
   async function loadOrder(id: string) {
     invalidateReturnForm();
+    invalidateChatContext();
     const requestedFormVersion = returnFormVersion.current;
     setItems([]); setReturnItemId(""); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setQuantity(1); setConfirmed(false);
     try {
@@ -143,12 +151,14 @@ export default function Home() {
     } catch (error) { if (returnFormVersion.current === requestedFormVersion) showError(error); }
   }
   async function sendChat() {
+    const requestedChatVersion = ++chatContextVersion.current;
     try {
       const value = await call("/chat", { method: "POST", body: JSON.stringify({ thread_id: threadId.current, message, order_id: orderId || null, shipment_id: shipmentId || null, agent_mode: agentMode }) });
+      if (chatContextVersion.current !== requestedChatVersion) return;
       setAnswer(value.answer);
       setPendingShipmentOptions(value.shipment_options || []);
       setNotice(value.ticket_id ? `已转人工，工单 ${value.ticket_id}。请在“我的工单”查看进度。` : `${value.status} · ${value.findings?.length || 0} 条专职证据`);
-    } catch (error) { showError(error); }
+    } catch (error) { if (chatContextVersion.current === requestedChatVersion) showError(error); }
   }
   async function submitReturnThroughAgent() {
     if (!confirmed || !returnItem) return;
@@ -301,8 +311,8 @@ export default function Home() {
         {ticketDetail && <div><h3>工单 {ticketDetail.id} · {ticketDetail.status}</h3>{ticketDetail.return_id && <p>关联退货：{ticketDetail.return_id}</p>}<ul>{ticketDetail.messages.map((item) => <li key={item.id}>{item.actor_type} · {item.body}</li>)}</ul>{ticketDetail.status === "open" && role !== "supervisor" && <><label>工单消息<textarea value={ticketText} onChange={(e) => setTicketText(e.target.value)} /></label><button disabled={!ticketText.trim()} onClick={() => ticketAction("messages")}>发送工单消息</button>{role === "support" && <button disabled={!ticketText.trim()} onClick={() => ticketAction("resolve")}>回复并结案</button>}</>}</div>}
       </section>}
       {role === "customer" && <>
-        <section className="card"><h2>我的订单</h2><button onClick={loadOrders}>刷新订单</button><ul>{orders.map((order) => <li key={order.id}><button className="secondary" onClick={() => loadOrder(order.id)}>{order.id}</button> {order.status}</li>)}</ul><label>订单编号<input value={orderId} onChange={(e) => { invalidateReturnForm(); setOrderId(e.target.value); setItems([]); setReturnItemId(""); setShipments([]); setShipmentId(""); setPendingShipmentOptions([]); setConfirmed(false); }} /></label><button onClick={() => loadOrder(orderId)}>查看商品</button><pre>{JSON.stringify(items, null, 2)}</pre></section>
-        <section className="card"><h2>咨询</h2><label>问题<textarea value={message} onChange={(e) => setMessage(e.target.value)} /></label>{(shipments.length > 1 || pendingShipmentOptions.length > 1) && <label>查询包裹<select value={shipmentId} onChange={(e) => setShipmentId(e.target.value)}><option value="">请选择包裹</option>{(shipments.length > 1 ? shipments.map((row) => row.id) : pendingShipmentOptions).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>}<label>Agent 模式<select value={agentMode} onChange={(e) => setAgentMode(e.target.value as "single" | "collab")}><option value="single">单图基线</option><option value="collab">双专职协作</option></select></label><button onClick={sendChat}>发送</button><pre>{answer}</pre></section>
+        <section className="card"><h2>我的订单</h2><button onClick={loadOrders}>刷新订单</button><ul>{orders.map((order) => <li key={order.id}><button className="secondary" onClick={() => loadOrder(order.id)}>{order.id}</button> {order.status}</li>)}</ul><label>订单编号<input value={orderId} onChange={(e) => { invalidateReturnForm(); invalidateChatContext(); setOrderId(e.target.value); setItems([]); setReturnItemId(""); setShipments([]); setShipmentId(""); setConfirmed(false); }} /></label><button onClick={() => loadOrder(orderId)}>查看商品</button><pre>{JSON.stringify(items, null, 2)}</pre></section>
+        <section className="card"><h2>咨询</h2><label>问题<textarea value={message} onChange={(e) => setMessage(e.target.value)} /></label>{(shipments.length > 1 || pendingShipmentOptions.length > 1) && <label>查询包裹<select value={shipmentId} onChange={(e) => { invalidateChatContext(); setShipmentId(e.target.value); }}><option value="">请选择包裹</option>{(shipments.length > 1 ? shipments.map((row) => row.id) : pendingShipmentOptions).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>}<label>Agent 模式<select value={agentMode} onChange={(e) => setAgentMode(e.target.value as "single" | "collab")}><option value="single">单图基线</option><option value="collab">双专职协作</option></select></label><button onClick={sendChat}>发送</button><pre>{answer}</pre></section>
         <section className="card"><h2>答复语言偏好</h2><p>仅在明确同意后保存。语言偏好只改变答复文字，不改变订单、退货或退款规则。</p><button onClick={async () => { const requestedGeneration = identityGeneration.current; try { await loadProfile(); if (identityGeneration.current === requestedGeneration) setNotice(""); } catch (error) { if (identityGeneration.current === requestedGeneration) showError(error); } }}>读取偏好</button>{profile && <><p>记忆同意：{profile.consent ? "已同意" : "未同意"} · 已保存语言：{profile.preferences.language || "无"}</p>{!profile.consent ? <button onClick={() => updateProfile("/profile/memory-consent", "POST", { consent: true })}>同意保存偏好</button> : <><label>答复语言<select value={languageChoice} onChange={(e) => setLanguageChoice(e.target.value)}><option value="中文">中文</option><option value="English">English</option></select></label><button onClick={() => updateProfile("/profile/preferences/language", "PUT", { value: languageChoice, confirmed: true })}>确认并保存语言</button><button className="secondary" onClick={() => updateProfile("/profile/preferences/language", "DELETE")}>删除语言偏好</button><button className="secondary" onClick={() => updateProfile("/profile/memory-consent", "POST", { consent: false })}>撤回记忆同意并清除偏好</button></>}</>}</section>
         <section className="card"><h2>申请退货</h2><p>订单 {orderId} · 商品 {returnItem?.id || (items.length > 1 ? "请先选择商品" : "请先查看商品")}</p><label>退货商品项<select value={returnItemId} onChange={(e) => { invalidateReturnForm(); setReturnItemId(e.target.value); setQuantity(1); setConfirmed(false); }}><option value="">请选择商品</option>{items.map((item) => <option key={item.id} value={item.id}>{item.id} · 数量 {item.quantity}</option>)}</select></label><label>数量<input type="number" min="1" max={returnItem?.quantity} value={quantity} onChange={(e) => { invalidateReturnForm(); setQuantity(Number(e.target.value)); setConfirmed(false); }} /></label><label>原因<input value={reason} onChange={(e) => { invalidateReturnForm(); setReason(e.target.value); setConfirmed(false); }} /></label><label><input type="checkbox" checked={confirmed} onChange={(e) => { invalidateReturnForm(); setConfirmed(e.target.checked); }} />我确认订单、商品、数量、原因并提交申请</label><button disabled={!confirmed || !returnItem} onClick={submitReturn}>提交退货</button><button className="secondary" disabled={!confirmed || !returnItem} onClick={submitReturnThroughAgent}>通过 Agent 提交退货</button><button className="secondary" disabled={!confirmed || !returnItem} onClick={requestReturnReview}>自动退货不适用时申请人工复核</button><p>{returnId}</p></section>
       </>}

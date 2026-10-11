@@ -4,6 +4,8 @@ ResolveAI is a synthetic, single-company e-commerce after-sales demonstration. I
 
 The first runnable development preview is [v0.1.0](docs/releases/v0.1.0.md). It does not pass the locked release gate.
 
+See the [system architecture and return workflow guide](docs/architecture/system-and-workflow.md) for illustrated service boundaries, the agent read path, and the approval-to-simulated-refund sequence.
+
 ## Docker Compose run (recommended)
 
 From the repository root, start the local mock stack with PostgreSQL 17, pgvector, API, web UI, Redis/Celery operational and bulk workers plus scheduler, Commerce MCP, OTel Collector, and Jaeger. No API keys are needed:

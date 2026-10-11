@@ -24,6 +24,7 @@ from resolveai.api import app
 from resolveai.config import settings
 from resolveai.db import Base, get_db, make_engine
 from resolveai.prompts import PromptRegistry, ROOT
+from evals.fixtures.independent_review_world import seed_case_world
 
 if __package__:
     from . import run_business
@@ -92,7 +93,7 @@ def load_cases() -> list[dict]:
                 or case.get("split") != "dev" or not case.get("dialogue_script")
                 or not case.get("group_keys") or not case.get("gold")
                 or case.get("review", {}).get("status") != "pending"
-                or case.get("terminal_scenario") not in {"approved_refund", "inspection_exception", "stale_proposal", "cross_customer_denial", "unconfirmed_return", "expired_window", "scripted"}
+                or case.get("terminal_scenario") not in {"approved_refund", "inspection_exception", "stale_proposal", "cross_customer_denial", "unconfirmed_return", "expired_window", "product_exception", "scripted"}
                 or (case.get("terminal_scenario") == "scripted" and not case.get("workflow_steps"))):
             raise ValueError(f"Invalid development case {case.get('case_id')}")
     return cases
@@ -224,7 +225,7 @@ def run_case(case: dict, run_id: str, seed_clock: datetime, *,
         factory = sessionmaker(engine, expire_on_commit=False)
         result = None
         with factory.begin() as db:
-            run_business.seed_demo(db, seed_clock)
+            seed_case_world(db, seed_clock, case["fixture"])
         if case["terminal_scenario"] == "expired_window":
             with factory.begin() as db:
                 shipment = db.scalar(select(m.Shipment).where(m.Shipment.order_id == case["fixture"]["order_id"]))

@@ -22,7 +22,16 @@ SOURCES = (
     ("policy_rag_positive", "evals/datasets/policy_retrieval_v1.jsonl", 20),
     ("policy_rag_negative", "evals/datasets/policy_retrieval_negatives_v1.jsonl", None),
     ("collaboration", "evals/datasets/collaboration_dev_v1.jsonl", None),
+    ("smoke_demo", "evals/datasets/review_pilot_smoke_v1.jsonl", None),
+    ("core_business", "evals/datasets/review_pilot_core_v1.jsonl", None),
+    ("intent_route", "evals/datasets/review_pilot_intent_v1.jsonl", None),
+    ("intent_dialogue", "evals/datasets/review_pilot_dialogue_v1.jsonl", None),
+    ("policy_rag_positive", "evals/datasets/review_pilot_policy_positive_v1.jsonl", None),
+    ("policy_rag_negative", "evals/datasets/review_pilot_policy_negative_v1.jsonl", None),
+    ("collaboration", "evals/datasets/review_pilot_collaboration_v1.jsonl", None),
 )
+REVIEW_WORLD_SOURCE = "evals/fixtures/independent_review_world.py"
+SEED_SOURCE = "apps/api/resolveai/seed.py"
 
 
 def load_packet_cases() -> tuple[list[dict], list[dict]]:
@@ -60,6 +69,10 @@ def load_packet_cases() -> tuple[list[dict], list[dict]]:
                           "source": row.get("source", {"kind": "synthetic", "license": "project-original"}),
                           "source_path": relative_path, "source_line": line_number,
                           "input": input_data, "gold": gold, "review_status": "pending"})
+    for relative_path in (REVIEW_WORLD_SOURCE, SEED_SOURCE):
+        source_meta.append({"suite": "fixture_dependency", "path": relative_path,
+                            "sha256": hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest(),
+                            "selected_cases": 0, "source_cases": 0})
     return cases, source_meta
 
 
@@ -164,7 +177,8 @@ def main() -> None:
         "Set `reviewer_id` to your human identity and `reviewed_at_utc` to an ISO-8601 UTC timestamp; explain each decision in `notes`. For `revise`, put a complete corrected gold object in `revised_gold_json` when possible. Record risk-tier concerns in notes. "
         "Record the adjudicated result in `adjudication.csv`; for a final `revise`, place the complete corrected gold object in `final_gold_json`. Do not directly change source labels during review. "
         "Only after disagreements are resolved should a separate grouped dev/locked split be created and the locked suite run against frozen code, model, Prompt, policy, fixture, and scorer hashes. "
-        "Cases sharing an order, customer, source conversation, or template family must remain in one partition. A shared policy bundle alone does not connect cases. The manifest reports connected group counts within and across suites; these development fixtures cannot be relabeled into an independent locked partition.\n",
+        "Cases sharing an order, customer, source conversation, or template family must remain in one partition. A shared policy bundle alone does not connect cases. The manifest reports connected group counts within and across suites; these development fixtures cannot be relabeled into an independent locked partition.\n\n"
+        "If only one human reviewer is available, complete `reviewer_a.csv` and leave `reviewer_b.csv` and `adjudication.csv` blank. Then run `PYTHONPATH=apps/api:. .venv/bin/python scripts/validate_single_human_review.py <packet-directory>`. `single_review_complete` checks the one-human form and source integrity only; it does not meet the v6 two-human gate or authorize a locked split. Keep any model review in its separate advisory output, not in `reviewer_b.csv`.\n",
         encoding="utf-8",
     )
     print(json.dumps({"output": str(output), **{key: manifest[key] for key in ("case_count", "critical_count", "normal_count", "reviewer_b_assignments", "missing_group_keys", "group_components_by_suite", "group_components_all_suites", "largest_group_component_cases", "locked_cases")}}, ensure_ascii=False))

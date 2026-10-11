@@ -85,6 +85,10 @@ def execute(client: TestClient | None, case: dict, run_id: str, *, post_request=
         create("expired_return_refused", fixture.get("reason", "synthetic return"), case["case_id"])
         return statuses, observations
 
+    if case["scenario"] == "product_exception":
+        create("product_exception_refused", fixture.get("reason", "synthetic return"), case["case_id"])
+        return statuses, observations
+
     if case["scenario"] == "cross_customer_denial":
         create("foreign_return_refused", "foreign attempt", case["case_id"])
         return statuses, observations

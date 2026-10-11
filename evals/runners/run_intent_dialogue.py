@@ -22,7 +22,7 @@ from resolveai.api import app
 from resolveai.config import settings
 from resolveai.db import Base, get_db, make_engine
 from resolveai.prompts import PromptRegistry, ROOT
-from resolveai.seed import seed_demo
+from evals.fixtures.independent_review_world import seed_case_world
 
 
 DATASET = ROOT / "evals/datasets/intent_dialogue_dev_v1.jsonl"
@@ -76,7 +76,7 @@ def run_case(case: dict, run_id: str, seed_clock: datetime) -> dict:
         Base.metadata.create_all(engine)
         factory = sessionmaker(engine, expire_on_commit=False)
         with factory.begin() as db:
-            seed_demo(db, seed_clock)
+            seed_case_world(db, seed_clock, case["fixture"])
             if case["fixture"].get("extra_shipment"):
                 extra = case["fixture"]["extra_shipment"]
                 db.add(m.Shipment(id=extra["id"], order_id=extra["order_id"], status="delivered",

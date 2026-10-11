@@ -41,10 +41,10 @@ def test_grouped_split_rejects_suite_with_only_one_independent_family():
         plan_grouped_split(cases)
 
 
-def test_current_166_case_development_packet_cannot_be_relabelled_locked():
+def test_current_development_packet_still_lacks_30_percent_independent_coverage():
     cases, _ = prepare_minimum_review.load_packet_cases()
-    assert len(cases) >= 166
-    with pytest.raises(ValueError, match='independent group'):
+    assert len(cases) >= 180
+    with pytest.raises(ValueError, match='30–50% locked coverage'):
         plan_grouped_split(cases)
 
 

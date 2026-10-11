@@ -27,11 +27,19 @@ def test_minimum_review_packet_assigns_two_critical_reviews(tmp_path, monkeypatc
     assert manifest["locked_cases"] == 0
     assert manifest["missing_group_keys"] == 0
     assert manifest["grouped_locked_split_ready"] is False
-    assert all(count >= 1 for count in manifest["group_components_by_suite"].values())
-    assert manifest["group_components_all_suites"] == 2
+    assert all(count >= 3 for count in manifest["group_components_by_suite"].values())
+    assert manifest["group_components_all_suites"] == 4
     assert max(manifest["suite_counts"].values()) <= manifest["largest_group_component_cases"] < len(cases)
     assert all(case["split"] == "dev" and case["review_status"] == "pending" for case in cases)
     assert manifest["packet_sha256"] == hashlib.sha256((output / "review_cases.jsonl").read_bytes()).hexdigest()
+    world_source = next(source for source in manifest["source_datasets"]
+                        if source["path"] == "evals/fixtures/independent_review_world.py")
+    assert world_source["sha256"] == hashlib.sha256(
+        (prepare_minimum_review.ROOT / world_source["path"]).read_bytes()).hexdigest()
+    seed_source = next(source for source in manifest["source_datasets"]
+                       if source["path"] == "apps/api/resolveai/seed.py")
+    assert seed_source["sha256"] == hashlib.sha256(
+        (prepare_minimum_review.ROOT / seed_source["path"]).read_bytes()).hexdigest()
     with (output / "adjudication.csv").open(encoding="utf-8", newline="") as stream:
         adjudication = csv.DictReader(stream)
         assert "final_gold_json" in adjudication.fieldnames

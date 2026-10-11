@@ -60,6 +60,43 @@ def test_reference_facts_come_from_seed_not_proposed_gold():
     assert snapshot["demo-order-01"]["shipments"][0]["delivered_at_utc"].endswith("+00:00")
 
 
+def test_reference_facts_include_separate_review_world():
+    seed_snapshot.cache_clear()
+    snapshot = seed_snapshot()
+    assert snapshot["review-order-harbor-02"]["favorable_window_days"] == 10
+    assert snapshot["review-order-harbor-02"]["items"][0]["quantity"] == 2
+    assert snapshot["review-order-ridge-02"]["items"][0]["special_notice_accepted"] is True
+
+
+def test_model_review_rejects_changed_review_world_source(tmp_path, monkeypatch):
+    packet = tmp_path / "packet"
+    monkeypatch.setattr(sys, "argv", ["prepare_minimum_review.py", "--output", str(packet)])
+    prepare_minimum_review.main()
+    manifest_path = packet / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    source = next(row for row in manifest["source_datasets"]
+                  if row["path"] == "evals/fixtures/independent_review_world.py")
+    source["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--refresh-only"])
+    with pytest.raises(ValueError, match="Source changed since packet creation"):
+        run_model_review.main()
+
+
+def test_model_review_rejects_modified_packet_gold_before_api_call(tmp_path, monkeypatch):
+    packet = tmp_path / "packet"
+    monkeypatch.setattr(sys, "argv", ["prepare_minimum_review.py", "--output", str(packet)])
+    prepare_minimum_review.main()
+    packet_path = packet / "review_cases.jsonl"
+    rows = [json.loads(line) for line in packet_path.read_text(encoding="utf-8").splitlines()]
+    rows[0]["gold"] = {"tampered": True}
+    packet_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    monkeypatch.setattr(run_model_review, "load_key", lambda: (_ for _ in ()).throw(AssertionError("API key loaded")))
+    monkeypatch.setattr(sys, "argv", ["run_model_review.py", str(packet), "--refresh-only"])
+    with pytest.raises(ValueError, match="Packet validation failed"):
+        run_model_review.main()
+
+
 def test_refresh_only_never_loads_api_key(tmp_path, monkeypatch):
     packet = tmp_path / "packet"
     monkeypatch.setattr(sys, "argv", ["prepare_minimum_review.py", "--output", str(packet)])

@@ -26,6 +26,7 @@ from resolveai.db import Base, make_engine
 from resolveai.openrouter import strict_json_schema
 from resolveai.prompts import PromptRegistry, ROOT
 from resolveai.seed import seed_demo
+from evals.fixtures.independent_review_world import seed_independent_review_world
 
 
 MODEL_OPTIONS = {
@@ -155,6 +156,7 @@ def seed_snapshot() -> dict[str, dict]:
         Base.metadata.create_all(engine)
         with Session(engine) as db:
             seed_demo(db, clock)
+            seed_independent_review_world(db, clock)
             db.flush()
             result = {}
             for order in db.scalars(select(domain_models.Order)).all():
@@ -316,6 +318,17 @@ def main() -> int:
         raise ValueError("Packet case count or IDs invalid")
     global _source_hashes
     _source_hashes = {source["path"]: source["sha256"] for source in packet_manifest["source_datasets"]}
+    for relative_path, expected_hash in _source_hashes.items():
+        source_path = (ROOT / relative_path).resolve()
+        if not source_path.is_relative_to(ROOT):
+            raise ValueError("Review source path is outside the repository")
+        if not source_path.is_file() or sha256(source_path) != expected_hash:
+            raise ValueError(f"Source changed since packet creation: {relative_path}")
+    from scripts.validate_minimum_review import validate_packet
+
+    packet_validation = validate_packet(packet)
+    if packet_validation["status"] == "invalid":
+        raise ValueError(f"Packet validation failed: {', '.join(packet_validation['errors'])}")
     prompt = PromptRegistry(PROMPT_RELEASE).get("eval_case_review")
     criteria_hash = sha256(CRITERIA)
     output = packet / choice["output_name"]

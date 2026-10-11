@@ -21,8 +21,8 @@ from resolveai.api import app
 from resolveai.config import settings
 from resolveai.db import Base, get_db, make_engine
 from resolveai.prompts import PromptRegistry, ROOT
-from resolveai.seed import seed_demo
 from resolveai.telemetry import score as cloud_score
+from evals.fixtures.independent_review_world import seed_case_world
 if __package__:
     from .score import score_case
 else:
@@ -50,7 +50,7 @@ def run_case(case: dict, mode: str, run_id: str, seed_clock: datetime | None = N
         Base.metadata.create_all(engine)
         factory = sessionmaker(engine, expire_on_commit=False)
         with factory.begin() as db:
-            seed_demo(db, seed_clock)
+            seed_case_world(db, seed_clock, case["fixture"])
 
         def override_db():
             with factory() as db:

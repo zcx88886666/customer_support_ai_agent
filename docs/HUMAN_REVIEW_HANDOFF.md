@@ -1,30 +1,31 @@
 # Human review and input needed for the v6 release gate
 
-> Current state on 2026-10-09 UTC: the no-key development minimum passes, but the independently reviewed locked release gate is false. See [status](STATUS.md), [review criteria](implementation/eval-review-criteria-v3.md), and [v6 evaluation requirements](../plans/resolveai-v6.md#9-评估业务终态协作增益与反向测试).
+> Current state on 2026-10-11 UTC: the no-key development minimum passes, but the independently reviewed locked release gate is false. The user can provide one human review. See [status](STATUS.md), [review criteria](implementation/eval-review-criteria-v3.md), and [v6 evaluation requirements](../plans/resolveai-v6.md#9-评估业务终态协作增益与反向测试).
 
-## 1. Independently review the evaluation cases
+## 1. Complete the available one-human review
 
-The current ignored local packet is `evals/review_packets/20261009T152716Z/`. Its `review_cases.jsonl` and `manifest.json` describe **166** synthetic cases, including **73 critical** cases. `reviewer_a.csv` assigns all 166; `reviewer_b.csv` assigns 92, including every critical case and at least 20% of normal cases. There are **zero completed human reviews**. Earlier LLM reviews are advisory and do not fill either human sheet.
+The current ignored local packet is `evals/review_packets/20261011T025432Z/`. Its `review_cases.jsonl` and `manifest.json` describe **180** synthetic cases, including **84 critical** cases and 14 cases from two separate [review stories](implementation/single-human-review-pilot-2026-10-11.md). `reviewer_a.csv` assigns all 180. There are **zero completed human reviews**.
 
-Assign two independent people. Each should check the source fixture and the v6 rules before seeing the other's sheet or model suggestions, record a decision with a reason and UTC time, and provide a complete corrected gold object for a `revise`. Resolve disagreements in `adjudication.csv` only after both sheets are complete. The packet README gives the field instructions. Then run:
+Check each case against its source fixture and the [review criteria](implementation/eval-review-criteria-v3.md) before looking at model suggestions. Fill **only `reviewer_a.csv`** with your identity, `accept`/`revise`/`reject`/`needs_context`, a concrete reason, and a UTC review time. For `revise`, supply the complete corrected gold JSON. Leave `reviewer_b.csv` and `adjudication.csv` blank; they are retained for a future second independent reviewer. The packet README gives the field instructions. Then run:
 
 ```bash
-PYTHONPATH=apps/api:. .venv/bin/python scripts/validate_minimum_review.py evals/review_packets/20261009T152716Z
+PYTHONPATH=apps/api:. .venv/bin/python scripts/validate_single_human_review.py evals/review_packets/20261011T025432Z
 ```
 
-`forms_complete` validates form structure and source hashes; it does not prove independent judgment or correct gold. If source cases change before review, regenerate the packet and review the new version.
+`single_review_complete` validates the first human form and source hashes. It does not prove gold correctness, make model advice a second human review, or pass the v6 locked release gate. If source cases change before review, regenerate the packet and review the new version. Earlier LLM reviews covered an older packet and are advisory only; a new model review may be run **after** your first pass to surface disagreements.
 
-## 2. Create genuinely independent case families
+## 2. What remains for a v6 locked release
 
-The existing cases have one connected customer/order/source/template group per suite. A leakage-safe 30–50% locked split therefore cannot be made from this packet, even after every review form is complete. New source scenarios and fixtures need distinct group keys and should cover the underrepresented multistep, exception, contradictory-evidence, and policy cases. Engineering can draft them; people must review the scenario truth and gold before they become locked. Renaming IDs or rewording the same template does not create independent cases.
+The two new source stories add distinct group components in every suite, but they contribute only 14 of 180 cases. The current packet still cannot meet the v6 30–50% leakage-safe locked split. Further independent multistep, exception, contradictory-evidence, and policy stories need authored source facts and reviewed gold. Renaming IDs or rewording the same template does not create independent cases.
 
-After review and adequate independent families exist, run:
+The original v6 gate also requires a **second independent human** on all critical cases and at least 20% of normal cases, then adjudication. `reviewer_b.csv` currently assigns 104 cases. If that reviewer becomes available and sufficient independent case families have been added, run the full validator and candidate preparer:
 
 ```bash
+PYTHONPATH=apps/api:. .venv/bin/python scripts/validate_minimum_review.py <completed-packet-directory>
 PYTHONPATH=apps/api:. .venv/bin/python scripts/prepare_grouped_split.py <completed-packet-directory>
 ```
 
-The output is only a `locked_candidate` dataset. Confirm the reviewer independence and leakage grouping outside the script, freeze code, scorer, dataset, policy bundle, Prompt release/hash and pinned model, then run the actual isolated locked comparison and check database/audit safety. The current packet is expected to fail the split command.
+That output is only a `locked_candidate` dataset. Confirm reviewer independence and leakage grouping outside the script, freeze code, scorer, dataset, policy bundle, Prompt release/hash and pinned model, then run the isolated locked comparison and check database/audit safety. The current packet is expected to fail the split command.
 
 ## 3. Confirm owner decisions before broader claims
 

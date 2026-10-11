@@ -26,6 +26,14 @@ SUITES = (
 )
 
 
+def verification_env() -> dict[str, str]:
+    """Make child runner imports work from a clean checkout and shell."""
+    python_path = os.pathsep.join((str(ROOT / "apps/api"), str(ROOT), os.getenv("PYTHONPATH", "")))
+    return {**os.environ, "PYTHONPATH": python_path, "AUTH_MODE": "mock", "OPENROUTER_API_KEY": "",
+            "LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": "",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": ""}
+
+
 def evidence_passed(suite: str, result: dict, exit_code: int) -> bool:
     if exit_code != 0:
         return False
@@ -56,8 +64,7 @@ def main() -> None:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-minimum-" + uuid4().hex[:6]
     folder = ROOT / "evals/reports" / run_id
     folder.mkdir(parents=True, exist_ok=False)
-    env = {**os.environ, "AUTH_MODE": "mock", "OPENROUTER_API_KEY": "", "LANGFUSE_PUBLIC_KEY": "",
-           "LANGFUSE_SECRET_KEY": "", "OTEL_EXPORTER_OTLP_ENDPOINT": ""}
+    env = verification_env()
     rows = []
     for suite, command in SUITES:
         try:

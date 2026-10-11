@@ -16,6 +16,11 @@ _configured = False
 _langfuse = None
 
 
+def cloud_export_configured() -> bool:
+    """Whether this process already holds a Langfuse exporter."""
+    return _langfuse is not None
+
+
 def should_export_span(span):
     scope = span.instrumentation_scope.name if span.instrumentation_scope else ""
     if scope == "fastapi":
